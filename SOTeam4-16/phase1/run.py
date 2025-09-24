@@ -233,7 +233,7 @@ def process_url_file(path_str: str) -> int:
         return 0
     
     # Build resources with url, category, and name
-    resources = [{"url": u, "category": classify_url(u), "name": u.rstrip('/').split('/')[-1]} for u in urls]
+    resources = [{"url": u, "category": classify_url(u), "name": "/".join(u.rstrip('/').split('/')[-2:])} for u in urls]
     models = [r for r in resources if r["category"] == "MODEL"] # Only evaluate models
     
     # Process models in parallel threads
@@ -277,3 +277,4 @@ def main(argv: List[str] | None = None) -> int:
 # If run directly, call main() and exit with this code
 if __name__ == "__main__":
     sys.exit(main())
+
