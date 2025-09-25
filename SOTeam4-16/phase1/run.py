@@ -27,6 +27,12 @@ import os            # for environment variables & file operations
 import pkgutil       # for discovering Python modules
 import subprocess    # for running external processes
 import sys           # for system-specific functions
+import time
+import shutil
+import stat
+
+from src.utils.repo_cloner import clone_repo_to_temp
+from src.utils.github_link_finder import find_github_url_from_hf
 from concurrent.futures import ThreadPoolExecutor, as_completed  # for parallel tasks
 from pathlib import Path       # for safer path operations
 from typing import Any, Dict, List, Tuple, Callable  # type hints
@@ -51,6 +57,10 @@ else:
 
 logger = logging.getLogger("phase1_cli") # CLI tool named logger
 
+def remove_readonly(func, path, excinfo):
+    """Error handler for shutil.rmtree that removes read-only permissions."""
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
 
 # ----------------------------
 # Install / Test handlers
@@ -134,12 +144,14 @@ def handle_test() -> int:
 def classify_url(url: str) -> str:
     """Classify URL into MODEL | DATASET | CODE."""
     u = url.lower().strip()
+    if "github.com" in u:
+        return "MODEL"
     if "huggingface.co/datasets/" in u or "/datasets/" in u:
         return "DATASET"
-    if "github.com" in u or "gitlab.com" in u:
-        return "CODE"
     if "huggingface.co" in u:
         return "MODEL"
+    if "gitlab.com" in u:
+        return "CODE"
     return "CODE"
 
 
@@ -219,35 +231,58 @@ def compute_metrics_for_model(resource: Dict[str, Any]) -> Dict[str, Any]:
 # URL File Processing
 # ----------------------------
 def process_url_file(path_str: str) -> int:
-    """Read URL file and output NDJSON results."""
+    """Read URL file, find/clone repos, run metrics, and output NDJSON results."""
     p = Path(path_str)
     if not p.exists():
         logger.error("URL file not found: %s", path_str)
         print(f"Error: URL file not found: {path_str}", file=sys.stderr)
         return 1
-    
-    # Read file, strip empty lines
+
     urls: List[str] = [ln.strip() for ln in p.read_text(encoding="utf-8").splitlines() if ln.strip()]
     if not urls:
         logger.info("URL file empty.")
         return 0
     
-    # Build resources with url, category, and name
-    resources = [{"url": u, "category": classify_url(u), "name": "/".join(u.rstrip('/').split('/')[-2:])} for u in urls]
-    models = [r for r in resources if r["category"] == "MODEL"] # Only evaluate models
-    
-    # Process models in parallel threads
+    resources = [
+        {
+            "url": u,
+            "category": classify_url(u),
+            "name": (
+                "/".join(u.rstrip('/').split('/')[-2:]) if "github.com" in u
+                else u.split('huggingface.co/')[-1].rstrip('/')
+            )
+        }
+        for u in urls
+    ]
+    models = [r for r in resources if r["category"] == "MODEL"]
+
+    for r in models:
+        repo_to_clone = None
+        if "github.com" in r['url']:
+            repo_to_clone = r['url']
+        elif "huggingface.co" in r['url']:
+            repo_to_clone = find_github_url_from_hf(r['name'])
+
+        if repo_to_clone:
+            r['local_path'] = clone_repo_to_temp(repo_to_clone)
+        else:
+            r['local_path'] = None
+
     with ThreadPoolExecutor(max_workers=min(8, os.cpu_count() or 1)) as exe:
         futures = {exe.submit(compute_metrics_for_model, r): r for r in models}
-        for fut in as_completed(futures): #as_completed defined at the top in imports
+        for fut in as_completed(futures):
             try:
-                result = fut.result() # Get the computed metrics
-                # Print as NDJSON (newline-delimited JSON)
+                result = fut.result()
                 print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
                 sys.stdout.flush()
             except Exception as exc:
                 logger.exception("Failed to compute metrics: %s", exc)
-
+            finally:
+                resource_done = futures[fut]
+                if resource_done.get('local_path'):
+                    logger.info(f"Cleaning up temp directory: {resource_done['local_path']}")
+                    shutil.rmtree(resource_done['local_path'], onerror=remove_readonly)
+            
     return 0
 
 
@@ -277,4 +312,5 @@ def main(argv: List[str] | None = None) -> int:
 # If run directly, call main() and exit with this code
 if __name__ == "__main__":
     sys.exit(main())
+
 
