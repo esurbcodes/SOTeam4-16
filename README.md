@@ -65,3 +65,16 @@ Extracts the first JSON object found inside the assistant message (handles tripl
 Public metric(resource)
 
 Puts it all together: reads local LICENSE/README, tries LLM (if API key present), extracts compatibility_score, or falls back to heuristic. Returns (score_in_[0,1], latency_ms)
+
+# Performance Claims:
+Start latency timer using time.perf_counter().
+
+The metric makes an API call to the Hugging Face Hub using the model's repository ID (e.g., google/gemma-2b).
+
+It extracts the total number of downloads from the API response.
+
+The raw download count is converted into a normalized score between 0.0 and 1.0 using a tiered system (e.g., >1M downloads = 1.0, >100k downloads = 0.8, etc.).
+
+If the model cannot be found on the Hub or if there is a network error, the metric gracefully fails and returns a score of 0.0.
+
+Return (score, latency_ms)
