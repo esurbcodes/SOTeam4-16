@@ -1,7 +1,7 @@
 # tests/unit/test_license_score_llm.py
 import json
 from unittest.mock import patch, MagicMock
-from phase1.src.metrics.license import metric
+from src.metrics.license import metric
 
 FAKE_RESPONSE_BODY = {
     "id": "llama3.1:example",
@@ -31,3 +31,4 @@ def test_llm_integration(mock_post, tmp_path):
     os.environ["PURDUE_GENAI_API_KEY"] = "fake-key"
     score, lat = metric({"local_dir": str(tmp_path)})
     assert 0.95 <= score <= 1.0
+
