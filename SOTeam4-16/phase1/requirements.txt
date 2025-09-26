@@ -1,4 +1,0 @@
-requests>=2.0.0
-huggingface_hub
-beautifulsoup4
-GitPython
