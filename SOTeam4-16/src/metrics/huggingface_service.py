@@ -1,0 +1,111 @@
+from huggingface_hub import HfApi, hf_api
+from datetime import datetime
+from typing import List, Optional
+
+
+class ModelMetadata:
+    """Represents metadata for a Hugging Face model."""
+
+    def __init__(
+        self,
+        name: str,
+        category: str,
+        size: int,
+        license: str,
+        downloads: int,
+        likes: int,
+        last_modified: datetime,
+        files: List[str],
+    ):
+        self.modelName = name
+        self.modelCategory = category
+        self.modelSize = size
+        self.license = license
+        self.timesDownloaded = downloads
+        self.modelLikes = likes
+        self.lastModified = last_modified
+        self.files = files
+
+    def __repr__(self):
+        return (
+            f"<ModelMetadata name={self.modelName}, category={self.modelCategory}, "
+            f"size={self.modelSize}, downloads={self.timesDownloaded}, likes={self.modelLikes}>"
+        )
+
+    def pretty_size(self) -> str:
+        """Return human-readable file size (e.g. '420 MB')."""
+        size = self.modelSize
+        for unit in ["bytes", "KB", "MB", "GB", "TB"]:
+            if size < 1024:
+                return f"{size:.2f} {unit}"
+            size /= 1024
+        return f"{size:.2f} PB"
+
+
+class HuggingFaceService:
+    """Wrapper around the Hugging Face API to fetch model information."""
+
+    def __init__(self, token: Optional[str] = None):
+        self.api = HfApi(token=token)
+
+    def fetch_model_metadata(self, model_id: str) -> Optional[ModelMetadata]:
+        """Fetch metadata for a given model ID from Hugging Face Hub.
+
+        Returns:
+            ModelMetadata if successful, None if model not found or API error.
+        """
+        try:
+            info = self.api.model_info(model_id)
+        except hf_api.HfHubHTTPError as e:
+            print(f"❌ Error: Could not fetch model '{model_id}' — {e}")
+            return None
+        except Exception as e:
+            print(f"❌ Unexpected error: {e}")
+            return None
+
+        model_name = info.modelId
+        category = info.pipeline_tag if info.pipeline_tag else "unknown"
+
+        # ✅ Use usedStorage instead of summing siblings
+        size = getattr(info, "usedStorage", 0) or 0
+
+        # License might be a property or in cardData
+        license_str = getattr(info, "license", None) or (
+            info.cardData.get("license") if hasattr(info, "cardData") and info.cardData else None
+        ) or "unspecified"
+
+        downloads = getattr(info, "downloads", 0) or 0
+        likes = getattr(info, "likes", 0) or 0
+        last_modified = getattr(info, "lastModified", datetime.min) or datetime.min
+        files = [s.rfilename for s in info.siblings]
+
+        return ModelMetadata(
+            name=model_name,
+            category=category,
+            size=size,
+            license=license_str,
+            downloads=downloads,
+            likes=likes,
+            last_modified=last_modified,
+            files=files,
+        )
+
+
+# -------------------------
+# Temporary test block
+# -------------------------
+if __name__ == "__main__":
+    service = HuggingFaceService()
+    model_id = "tencent/SRPO"  # test with a known model
+    metadata = service.fetch_model_metadata(model_id)
+
+    if metadata:
+        print("✅ Test run — Hugging Face model metadata:")
+        print("Name:", metadata.modelName)
+        print("Category:", metadata.modelCategory)
+        print("Size:", metadata.pretty_size())  # ✅ human readable size
+        print("License:", metadata.license)
+        print("Downloads:", metadata.timesDownloaded)
+        print("Likes:", metadata.modelLikes)
+        print("Last Modified:", metadata.lastModified)
+        print("Files:", metadata.files)
