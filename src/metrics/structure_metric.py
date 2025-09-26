@@ -1,39 +1,44 @@
-# structure_metric.py
-from huggingface_service import HuggingFaceService
+# src/metrics/structure_metric.py
+from typing import Optional
+try:
+    from services.huggingface_service import HuggingFaceService
+except Exception:
+    from huggingface_service import HuggingFaceService
 
-class StructureMetric:
+
+class StructureMetricRaw:
     @staticmethod
-    def calculate_structure_score(model_info: dict) -> int:
+    def calculate_structure_score(model_info) -> int:
         """
-        Calculates a score based on the model's file structure.
-        
-        Rules (example, tweak as you like):
-        - If model has < 5 files → score 1
-        - If model has 5–20 files → score 2
-        - If model has 20–50 files → score 3
-        - If model has > 50 files → score 4
+        Score based on the number of files (siblings) inside raw ModelInfo.
         """
+        siblings = getattr(model_info, "siblings", []) or []
+        file_count = len(siblings)
 
-        if "siblings" not in model_info:
-            return 0  # no file info available
-
-        file_list = model_info["siblings"]
-        file_count = len(file_list)
-
+        if file_count == 0:
+            return 0
         if file_count < 5:
             return 1
-        elif file_count < 20:
+        if file_count < 20:
             return 2
-        elif file_count < 50:
+        if file_count < 50:
             return 3
-        else:
-            return 4
+        return 4
+
+    @staticmethod
+    def score_model(model_id: str, token: Optional[str] = None) -> Optional[int]:
+        service = HuggingFaceService(token=token)
+        # directly pull raw ModelInfo
+        model_info = service.api.model_info(model_id)
+        if model_info is None:
+            print(f"Could not fetch model info for '{model_id}'")
+            return None
+        return StructureMetricRaw.calculate_structure_score(model_info)
+
 
 if __name__ == "__main__":
-    # Example usage
-    service = HuggingFaceService()
-    model_id = "bert-base-uncased"
-    model_info = service.get_model_info(model_id)
+    import sys
 
-    score = StructureMetric.calculate_structure_score(model_info)
+    model_id = sys.argv[1] if len(sys.argv) > 1 else "bert-base-uncased"
+    score = StructureMetricRaw.score_model(model_id)
     print(f"Structure score for {model_id}: {score}")
