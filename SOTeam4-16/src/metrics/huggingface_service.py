@@ -89,6 +89,14 @@ class HuggingFaceService:
             last_modified=last_modified,
             files=files,
         )
+    def get_raw_model_info(self, model_id: str):
+        """Return the raw ModelInfo object from huggingface_hub (or None on failure)."""
+        try:
+            return self.api.model_info(model_id)
+        except Exception as e:
+            print(f"Could not fetch raw model info for '{model_id}': {e}")
+            return None
+        
 
 
 # -------------------------
