@@ -1,0 +1,6 @@
+#!/bin/sh
+# Wrapper to call the actual Python CLI
+# Works for Linux autograder
+
+# Use python3 to execute run.py with all arguments
+python3 run.py "$@"
