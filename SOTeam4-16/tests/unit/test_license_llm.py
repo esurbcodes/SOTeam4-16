@@ -20,7 +20,7 @@ class FakeResp:
     def text(self):
         return json.dumps(self._body)
 
-@patch("phase1.src.metrics.license.requests.post")
+@patch("src.metrics.license.requests.post")
 def test_llm_integration(mock_post, tmp_path):
     # prepare a license file
     p = tmp_path / "LICENSE"
@@ -31,4 +31,5 @@ def test_llm_integration(mock_post, tmp_path):
     os.environ["PURDUE_GENAI_API_KEY"] = "fake-key"
     score, lat = metric({"local_dir": str(tmp_path)})
     assert 0.95 <= score <= 1.0
+
 
