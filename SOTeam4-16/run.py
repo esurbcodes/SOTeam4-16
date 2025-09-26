@@ -81,7 +81,7 @@ def handle_install() -> int:
     if not req.exists(): # if no requirements.txt, then do nothing
         logger.info("No requirements.txt found; nothing to install.")
         return 0
-    cmd = [sys.executable, "-m", "pip", "install", "--user", "-r", str(req)]
+    cmd = [sys.executable, "-m", "pip", "install", "-r", str(req)]
     rc = run_subprocess(cmd)
     if rc != 0:
         logger.error("Dependency installation failed (exit %d)", rc)
@@ -312,5 +312,6 @@ def main(argv: List[str] | None = None) -> int:
 # If run directly, call main() and exit with this code
 if __name__ == "__main__":
     sys.exit(main())
+
 
 
