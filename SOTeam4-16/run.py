@@ -31,8 +31,7 @@ import time
 import shutil
 import stat
 
-from src.utils.repo_cloner import clone_repo_to_temp
-from src.utils.github_link_finder import find_github_url_from_hf
+
 from concurrent.futures import ThreadPoolExecutor, as_completed  # for parallel tasks
 from pathlib import Path       # for safer path operations
 from typing import Any, Dict, List, Tuple, Callable  # type hints
@@ -232,6 +231,8 @@ def compute_metrics_for_model(resource: Dict[str, Any]) -> Dict[str, Any]:
 # ----------------------------
 def process_url_file(path_str: str) -> int:
     """Read URL file, find/clone repos, run metrics, and output NDJSON results."""
+    from src.utils.repo_cloner import clone_repo_to_temp
+    from src.utils.github_link_finder import find_github_url_from_hf
     p = Path(path_str)
     if not p.exists():
         logger.error("URL file not found: %s", path_str)
@@ -312,6 +313,7 @@ def main(argv: List[str] | None = None) -> int:
 # If run directly, call main() and exit with this code
 if __name__ == "__main__":
     sys.exit(main())
+
 
 
 
