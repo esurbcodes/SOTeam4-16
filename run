@@ -38,6 +38,22 @@ from concurrent.futures import ThreadPoolExecutor, as_completed  # for parallel 
 from pathlib import Path       # for safer path operations
 from typing import Any, Dict, List, Tuple, Callable  # type hints
 
+REPO_ROOT = Path(__file__).resolve().parent
+SRC_DIR = REPO_ROOT / "src"
+
+# Make imports like `import src...` work in this process
+for p in (str(REPO_ROOT), str(SRC_DIR)):
+    if p not in sys.path:
+        sys.path.insert(0, p)
+
+# Ensure child processes (pytest/coverage) inherit it too
+_prev = os.environ.get("PYTHONPATH", "")
+parts = [str(REPO_ROOT), str(SRC_DIR)]
+if _prev:
+    parts.append(_prev)
+os.environ["PYTHONPATH"] = os.pathsep.join(parts)
+
+
 # ----------------------------
 # Logging setup (reads env)
 # ----------------------------
