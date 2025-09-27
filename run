@@ -30,6 +30,8 @@ import sys           # for system-specific functions
 import time
 import shutil
 import stat
+import io
+from contextlib import redirect_stdout, redirect_stderr
 
 
 from concurrent.futures import ThreadPoolExecutor, as_completed  # for parallel tasks
@@ -83,6 +85,30 @@ def run_subprocess(cmd: List[str]) -> int: # cmd is a variable of type: List[str
     except Exception as exc:  # safety net
         logger.error("Subprocess failed: %s", exc)
         return 1
+        
+# --- AUTOGRADER BOOTSTRAP HELPERS ---
+def _have(mod: str) -> bool:
+    try:
+        import importlib.util
+        return importlib.util.find_spec(mod) is not None
+    except Exception:
+        return False
+
+def _pip_install(*args: str) -> int:
+    # install into the exact interpreter the grader is using
+    return run_subprocess([sys.executable, "-m", "pip", *args])
+
+def ensure_test_deps() -> None:
+    # runtime deps
+    if Path("requirements.txt").exists():
+        _pip_install("install", "--no-cache-dir", "-r", "requirements.txt")
+    # dev/test deps
+    if Path("requirements-dev.txt").exists():
+        _pip_install("install", "--no-cache-dir", "-r", "requirements-dev.txt")
+    # fallback if grader ignored requirements-dev.txt
+    if not (_have("pytest") and _have("coverage")):
+        _pip_install("install", "--no-cache-dir", "pytest", "pytest-cov", "pytest-mock", "coverage")
+
 
 
 def handle_install() -> int:
@@ -125,21 +151,20 @@ def handle_test() -> int:
         [sys.executable, "-m", "pytest", "-q"],
         text=True, capture_output=True
     )
-    # naive but sufficient counting
     passed = p.stdout.count(".")
     total = passed + p.stdout.count("F") + p.stdout.count("E") + p.stdout.count("s")
-    if total == 0:  # fallback if output format changes
+    if total == 0:
         total = passed
 
     coverage_pct = "0"
 
-    # 2) If coverage is installed, run once under coverage and print a report
+    # 2) If coverage is installed, run once under coverage and parse the report
     if have_cov:
-        cov_run = subprocess.run(
-            [sys.executable, "-m", "coverage", "run", "-m", "pytest", "-q"]
+        subprocess.run(
+            [sys.executable, "-m", "coverage", "run", "-m", "pytest", "-q"],
+            text=True, capture_output=True
         )
-        # Even if tests fail, try to print a coverage summary
-        rep = subprocess.run(
+        rep = subprocess.run(  # <-- this was missing
             [sys.executable, "-m", "coverage", "report", "-m"],
             text=True, capture_output=True
         )
@@ -149,11 +174,9 @@ def handle_test() -> int:
             if last and last[-1].endswith("%"):
                 coverage_pct = last[-1].rstrip("%")
 
-    # 3) Print the exact line the grader looks for
     print(f"{passed}/{total} test cases passed. {coverage_pct}% line coverage achieved.")
-
-    # Return pytest’s exit code (0 on success)
     return p.returncode
+
 
 
 # ----------------------------
@@ -278,7 +301,6 @@ def process_url_file(path_str: str) -> int:
     - code_link and dataset_link can be blank.
     - Only model_link entries generate NDJSON output (one JSON object per line).
     - Preserves input order.
-    - Tracks seen datasets in a set for later reuse.
     """
     # lazy imports so 'run install' doesn't fail on missing heavy libs
     try:
@@ -296,7 +318,7 @@ def process_url_file(path_str: str) -> int:
         print(f"Error: URL file not found: {path_str}", file=sys.stderr)
         return 1
 
-    # Read CSV-like lines (comma-separated triples). Use csv.reader to be robust.
+    # Read CSV-like lines (comma-separated triples). Allow single-URL lines too.
     import csv as _csv
     resources: List[Dict[str, Any]] = []
 
@@ -341,7 +363,6 @@ def process_url_file(path_str: str) -> int:
             }
             resources.append(resource)
 
-
     # Filter only lines that include a model URL and classify as MODEL
     models = [r for r in resources if r.get("model_url") and classify_url(r["model_url"]) == "MODEL"]
 
@@ -353,17 +374,14 @@ def process_url_file(path_str: str) -> int:
             repo_to_clone = model_url
         elif "huggingface.co" in model_url and find_github_url_from_hf:
             try:
-                # find_github_url_from_hf should return a github URL or None
-                repo_to_clone = find_github_url_from_hf(r["name"])
+                repo_to_clone = find_github_url_from_hf(r["name"])  # may return None
             except Exception as e:
                 logger.debug("hf->github mapping failed for %s: %s", r["name"], e)
                 repo_to_clone = None
 
-        # Clone if we found a repository location and cloning helper available
         if repo_to_clone and clone_repo_to_temp:
             try:
                 local_dir = clone_repo_to_temp(repo_to_clone)
-                # store both keys for compatibility with different metrics
                 r["local_path"] = local_dir
                 r["local_dir"] = local_dir
             except Exception as e:
@@ -377,16 +395,18 @@ def process_url_file(path_str: str) -> int:
     # Process sequentially to preserve input order and avoid stdout interleaving
     for r in models:
         try:
-            result = compute_metrics_for_model(r)
-        except Exception as exc:
-            logger.exception("Failed computing metrics for %s: %s", r.get("url"), exc)
-            # Minimal, valid fallback so the grader still gets 1 JSON line
+            # Silence any prints from metric functions so NDJSON stays clean
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                result = compute_metrics_for_model(r)
+        except Exception:
+            logger.exception("Failed computing metrics for %s", r.get("url"))
+            # Minimal, valid fallback so the grader still gets one JSON line
             result = {
                 "name": r.get("name", "unknown"),
                 "category": "MODEL",
                 "url": r.get("model_url") or r.get("url"),
                 "net_score": 0.0,
-                "net_score_latency": 0,
+                "net_score_latency": 0
             }
 
         # Always emit exactly one JSON object per model line
@@ -402,34 +422,6 @@ def process_url_file(path_str: str) -> int:
                 logger.debug("Cleanup failed for %s", local)
 
     return 0
-
-
-  # --- AUTOGRADER BOOTSTRAP HELPERS ---
-
-def _have(mod: str) -> bool:
-    try:
-        import importlib.util
-        return importlib.util.find_spec(mod) is not None
-    except Exception:
-        return False
-
-def _pip_install(*args: str) -> int:
-    # install into the exact interpreter the grader is using
-    return run_subprocess([sys.executable, "-m", "pip", *args])
-
-def ensure_test_deps() -> None:
-    # runtime deps
-    if Path("requirements.txt").exists():
-        _pip_install("install", "--no-cache-dir", "-r", "requirements.txt")
-
-    # dev/test deps
-    if Path("requirements-dev.txt").exists():
-        _pip_install("install", "--no-cache-dir", "-r", "requirements-dev.txt")
-
-    # fallback if grader ignored requirements-dev.txt
-    if not (_have("pytest") and _have("coverage")):
-        _pip_install("install", "--no-cache-dir", "pytest", "pytest-cov", "pytest-mock", "coverage")
-
 
 
 # ----------------------------
