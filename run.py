@@ -244,61 +244,125 @@ def compute_metrics_for_model(resource: Dict[str, Any]) -> Dict[str, Any]:
 # URL File Processing
 # ----------------------------
 def process_url_file(path_str: str) -> int:
-    """Read URL file, find/clone repos, run metrics, and output NDJSON results."""
-    from src.utils.repo_cloner import clone_repo_to_temp
-    from src.utils.github_link_finder import find_github_url_from_hf
+    """
+    Accepts either:
+      • one URL per line, or
+      • CSV rows: code_link, dataset_link, model_link
+    Emits exactly one NDJSON object per MODEL entry.
+    """
+    # lazy imports so `./run install` doesn't break if utils are missing
+    try:
+        from src.utils.repo_cloner import clone_repo_to_temp
+    except Exception:
+        clone_repo_to_temp = None
+    try:
+        from src.utils.github_link_finder import find_github_url_from_hf
+    except Exception:
+        find_github_url_from_hf = None
+
     p = Path(path_str)
     if not p.exists():
         logger.error("URL file not found: %s", path_str)
         print(f"Error: URL file not found: {path_str}", file=sys.stderr)
         return 1
 
-    urls: List[str] = [ln.strip() for ln in p.read_text(encoding="utf-8").splitlines() if ln.strip()]
-    if not urls:
-        logger.info("URL file empty.")
-        return 0
-    
-    resources = [
-        {
-            "url": u,
-            "category": classify_url(u),
-            "name": (
-                "/".join(u.rstrip('/').split('/')[-2:]) if "github.com" in u
-                else u.split('huggingface.co/')[-1].rstrip('/')
-            )
-        }
-        for u in urls
-    ]
-    models = [r for r in resources if r["category"] == "MODEL"]
+    import csv as _csv
+    resources: List[Dict[str, Any]] = []
 
+    with p.open("r", encoding="utf-8") as fh:
+        reader = _csv.reader(fh)
+        for row in reader:
+            row = [part.strip() for part in row if part and part.strip()]
+            code_url = dataset_url = model_url = None
+
+            if len(row) == 1:
+                url = row[0]
+                cat = classify_url(url)
+                if cat == "MODEL":
+                    model_url = url
+                elif cat == "DATASET":
+                    dataset_url = url
+                else:
+                    code_url = url
+            else:
+                parts = (row + ["", "", ""])[:3]
+                code_url, dataset_url, model_url = (
+                    parts[0] or None, parts[1] or None, parts[2] or None
+                )
+
+            chosen = model_url or dataset_url or code_url
+            if not chosen:
+                continue
+
+            # derive a friendly name
+            if "huggingface.co" in chosen:
+                name = chosen.split("huggingface.co/")[-1].rstrip("/")
+            elif "github.com" in chosen:
+                name = "/".join(chosen.rstrip("/").split("/")[-2:])
+            else:
+                name = chosen.rstrip("/").split("/")[-1] or "unknown"
+
+            resources.append({
+                "code_url": code_url,
+                "dataset_url": dataset_url,
+                "model_url": model_url,
+                "category": classify_url(model_url or dataset_url or code_url),
+                "name": name or "unknown",
+                "url": model_url or code_url or dataset_url,
+            })
+
+    # only rows that actually have a model URL AND classify as MODEL
+    models = [r for r in resources if r.get("model_url") and classify_url(r["model_url"]) == "MODEL"]
+
+    # best-effort repo resolution for metrics that need a checkout
     for r in models:
         repo_to_clone = None
-        if "github.com" in r['url']:
-            repo_to_clone = r['url']
-        elif "huggingface.co" in r['url']:
-            repo_to_clone = find_github_url_from_hf(r['name'])
-
-        if repo_to_clone:
-            r['local_path'] = clone_repo_to_temp(repo_to_clone)
-        else:
-            r['local_path'] = None
-
-    with ThreadPoolExecutor(max_workers=min(8, os.cpu_count() or 1)) as exe:
-        futures = {exe.submit(compute_metrics_for_model, r): r for r in models}
-        for fut in as_completed(futures):
+        murl = r.get("model_url") or ""
+        if "github.com" in murl:
+            repo_to_clone = murl
+        elif "huggingface.co" in murl and find_github_url_from_hf:
             try:
-                result = fut.result()
-                print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
-                sys.stdout.flush()
-            except Exception as exc:
-                logger.exception("Failed to compute metrics: %s", exc)
-            finally:
-                resource_done = futures[fut]
-                if resource_done.get('local_path'):
-                    logger.info(f"Cleaning up temp directory: {resource_done['local_path']}")
-                    shutil.rmtree(resource_done['local_path'], onerror=remove_readonly)
-            
+                repo_to_clone = find_github_url_from_hf(r["name"])  # may be None
+            except Exception as e:
+                logger.debug("hf->github lookup failed for %s: %s", r["name"], e)
+
+        if repo_to_clone and clone_repo_to_temp:
+            try:
+                local_dir = clone_repo_to_temp(repo_to_clone)
+                r["local_path"] = local_dir
+            except Exception as e:
+                logger.warning("Clone failed for %s: %s", repo_to_clone, e)
+                r["local_path"] = None
+        else:
+            r["local_path"] = None
+
+    # process sequentially; ALWAYS print one JSON object per model row
+    for r in models:
+        try:
+            result = compute_metrics_for_model(r)
+        except Exception as exc:
+            logger.exception("Failed computing metrics for %s: %s", r.get("url"), exc)
+            result = {
+                "name": r.get("name", "unknown"),
+                "category": "MODEL",
+                "url": r.get("model_url") or r.get("url"),
+                "net_score": 0.0,
+                "net_score_latency": 0
+            }
+
+        sys.stdout.write(json.dumps(result, ensure_ascii=False, separators=(",", ":")) + "\n")
+        sys.stdout.flush()
+
+        # cleanup
+        local = r.get("local_path")
+        if local:
+            try:
+                shutil.rmtree(local, onerror=lambda f, path, ex: (os.chmod(path, stat.S_IWRITE), f(path)))
+            except Exception:
+                logger.debug("Cleanup failed for %s", local)
+
     return 0
+
 
 
 # ----------------------------
