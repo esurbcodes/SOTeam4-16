@@ -38,6 +38,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed  # for parallel 
 from pathlib import Path       # for safer path operations
 from typing import Any, Dict, List, Tuple, Callable  # type hints
 
+os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+os.environ.setdefault("TQDM_DISABLE", "1")  # extra belt-and-suspenders
+
 REPO_ROOT = Path(__file__).resolve().parent
 SRC_DIR = REPO_ROOT / "src"
 
@@ -402,28 +405,34 @@ def process_url_file(path_str: str) -> int:
     # For each model, try to find a repository to clone (github or hf->github)
     for r in models:
         repo_to_clone = None
-        model_url = r.get("model_url", "") or ""
-        if "github.com" in model_url:
-            repo_to_clone = model_url
-        elif "huggingface.co" in model_url and find_github_url_from_hf:
-            try:
-                repo_to_clone = find_github_url_from_hf(r["name"])  # may return None
-            except Exception as e:
-                logger.debug("hf->github mapping failed for %s: %s", r["name"], e)
-                repo_to_clone = None
+    model_url = r.get("model_url", "") or ""
 
-        if repo_to_clone and clone_repo_to_temp:
-            try:
+    if "github.com" in model_url:
+        repo_to_clone = model_url
+    elif "huggingface.co" in model_url and find_github_url_from_hf:
+        try:
+            # Silence any progress bars / prints from HF utilities
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                repo_to_clone = find_github_url_from_hf(r["name"])  # may return None
+        except Exception as e:
+            logger.debug("hf->github mapping failed for %s: %s", r["name"], e)
+            repo_to_clone = None
+
+    if repo_to_clone and clone_repo_to_temp:
+        try:
+            # Silence any VCS / progress output during clone
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
                 local_dir = clone_repo_to_temp(repo_to_clone)
-                r["local_path"] = local_dir
-                r["local_dir"] = local_dir
-            except Exception as e:
-                logger.warning("Failed to clone %s -> %s: %s", repo_to_clone, r["url"], e)
-                r["local_path"] = None
-                r["local_dir"] = None
-        else:
+            r["local_path"] = local_dir
+            r["local_dir"] = local_dir
+        except Exception as e:
+            logger.warning("Failed to clone %s -> %s: %s", repo_to_clone, r["url"], e)
             r["local_path"] = None
             r["local_dir"] = None
+    else:
+        r["local_path"] = None
+        r["local_dir"] = None
+
 
     # Process sequentially to preserve input order and avoid stdout interleaving
     for r in models:
