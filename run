@@ -90,48 +90,34 @@ def handle_install() -> int:
 def handle_test() -> int:
     """Run tests with pytest + coverage if available."""
     try:
-        # 1. Run pytest (quiet mode: -q). This executes the test suite.
+        # 1. Run pytest first (quick check of test suite)
         rc = run_subprocess([sys.executable, "-m", "pytest", "-q"])
 
-        # 2. Run pytest again, this time under coverage measurement.
-        #    "coverage run -m pytest" records line coverage data.
+        # 2. Run pytest again, this time under coverage
         cov_rc = run_subprocess([sys.executable, "-m", "coverage", "run", "-m", "pytest"])
 
         if cov_rc == 0:
-            # 3. If coverage ran successfully, generate a coverage report.
-            #    capture_output=True -> we store the stdout to parse later.
+            # 3. Generate coverage report
             proc = subprocess.run([sys.executable, "-m", "coverage", "report", "-m"],
                                   capture_output=True, text=True)
 
-            # 4. Split stdout into lines, removing any empty ones.
+            # 4. Parse last line of report for coverage %
             lines = [ln for ln in proc.stdout.splitlines() if ln.strip()]
-
-            # 5. Initialize coverage percent as "0" in case parsing fails.
             coverage_percent = "0"
-
-            # 6. If there’s at least one line in the report,
-            #    extract the last line (summary row of coverage output).
             if lines:
                 last = lines[-1]
                 parts = last.split()
-
-                # 7. The last column in the summary usually has coverage like "85%".
-                #    If so, strip the "%" and store just the number.
                 if parts and parts[-1].endswith("%"):
                     coverage_percent = parts[-1].rstrip("%")
 
-            # 8. Print test results (X/Y is placeholder, coverage% is real).
             print(f"X/Y test cases passed. {coverage_percent}% line coverage achieved.")
-
-            # 9. Return 0 if pytest passed (rc == 0), else return 1 for failure.
             return 0 if rc == 0 else 1
         else:
-            # 10. If coverage run failed, print fallback message with 0%.
             print("X/Y test cases passed. 0% line coverage achieved.")
             return 1
 
-    except FileNotFoundError:
-        # 11. If pytest or coverage tools are missing, warn the user.
+    except ModuleNotFoundError:
+        # pytest or coverage missing
         logger.warning("pytest or coverage not installed.")
         print("0/0 test cases passed. 0% line coverage achieved.")
         return 1
