@@ -141,17 +141,31 @@ def handle_test() -> int:
 # URL classification
 # ----------------------------
 def classify_url(url: str) -> str:
-    """Classify URL into MODEL | DATASET | CODE."""
-    u = url.lower().strip()
-    if "github.com" in u:
-        return "MODEL"
-    if "huggingface.co/datasets/" in u or "/datasets/" in u:
-        return "DATASET"
-    if "huggingface.co" in u:
-        return "MODEL"
-    if "gitlab.com" in u:
+    """
+    Classify URL into one of: MODEL | DATASET | CODE.
+
+    Rules:
+      - HuggingFace dataset pages -> DATASET
+      - Other HuggingFace pages (models, spaces, etc.) -> MODEL
+      - Git hosts (GitHub/GitLab/Bitbucket) -> CODE
+      - Everything else -> CODE
+    """
+    u = (url or "").strip().lower()
+    if not u:
         return "CODE"
+
+    # HuggingFace first
+    if "huggingface.co" in u:
+        if "huggingface.co/datasets/" in u or "/datasets/" in u:
+            return "DATASET"
+        return "MODEL"
+
+    # Git hosting -> treat as code
+    if "github.com" in u or "gitlab.com" in u or "bitbucket.org" in u:
+        return "CODE"
+
     return "CODE"
+
 
 
 # ----------------------------
