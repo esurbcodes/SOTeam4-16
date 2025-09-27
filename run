@@ -148,58 +148,105 @@ def handle_test() -> int:
     """
     Run the test suite once under coverage and print exactly:
     'X/Y test cases passed. Z% line coverage achieved.'
-    Always exit 0 so the autograder treats the command as successful.
+
+    Returns:
+      0 if pytest exit code is 0 (tests passed), otherwise 1.
     """
-    # Make `from src ...` work; DO NOT disable pytest plugin autoload.
+    # Ensure tests can import src/ when run in subprocesses
     os.environ.setdefault("PYTHONPATH", os.pathsep.join([os.getcwd(), str(Path.cwd() / "src")]))
 
-    import tempfile, xml.etree.ElementTree as ET
+    import tempfile
+    import xml.etree.ElementTree as ET
+    import re
 
-    # --- 1) Run pytest ONCE under coverage and also produce JUnit XML ---
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".xml") as tf:
-        junit_path = tf.name
+    # Create a temporary file for JUnit XML output (mkstemp avoids Windows locking problems)
+    junit_fd, junit_path = tempfile.mkstemp(suffix=".xml")
+    os.close(junit_fd)
 
-    subprocess.run(
-        [sys.executable, "-m", "coverage", "erase"],
-        text=True, capture_output=True
-    )
-    p = subprocess.run(
-        [sys.executable, "-m", "coverage", "run", "-m", "pytest", "-q", f"--junitxml={junit_path}"],
-        text=True, capture_output=True
-    )
-
-    # --- 2) Parse X/Y from the JUnit XML (robust) ---
-    total = passed = 0
     try:
-        root = ET.parse(junit_path).getroot()
-        node = root if root.tag == "testsuite" else root.find("testsuite")
-        if node is not None:
-            tests   = int(node.attrib.get("tests", "0"))
-            fails   = int(node.attrib.get("failures", "0"))
-            errors  = int(node.attrib.get("errors", "0"))
-            skipped = int(node.attrib.get("skipped", "0"))
-            total   = tests
-            passed  = tests - fails - errors - skipped
-    except Exception:
-        out = p.stdout or ""
-        passed = out.count(".")
-        total  = max(passed, 0)
+        # Clear any previous coverage data to get a fresh measurement
+        subprocess.run([sys.executable, "-m", "coverage", "erase"], capture_output=True, text=True)
 
-    # --- 3) Get coverage percentage (same settings coverage.py would use) ---
-    rep = subprocess.run(
-        [sys.executable, "-m", "coverage", "report", "-m"],
-        text=True, capture_output=True
-    )
-    coverage_pct = "0"
-    lines = [ln for ln in (rep.stdout or "").splitlines() if ln.strip()]
-    if lines:
-        last = lines[-1].split()
-        if last and last[-1].endswith("%"):
-            coverage_pct = last[-1].rstrip("%")
+        # Run tests once under coverage and produce JUnit XML for reliable counts
+        proc = subprocess.run(
+            [sys.executable, "-m", "coverage", "run", "-m", "pytest", "-q", f"--junitxml={junit_path}"],
+            capture_output=True,
+            text=True
+        )
+        pytest_rc = proc.returncode
 
-    # --- 4) EXACTLY one line to stdout, and exit 0 ---
-    print(f"{passed}/{total} test cases passed. {coverage_pct}% line coverage achieved.")
-    return 0
+        # Default totals
+        total = 0
+        passed = 0
+
+        # Try to parse JUnit XML for robust counts (supports single testsuite or multiple)
+        try:
+            tree = ET.parse(junit_path)
+            root = tree.getroot()
+
+            # collect all <testsuite> nodes (root may be testsuite or testsuites)
+            suites = []
+            if root.tag == "testsuite":
+                suites = [root]
+            else:
+                # findall with .// to capture nested testsuites too
+                suites = root.findall(".//testsuite")
+                # if still empty and root itself has attributes, try root as a suite
+                if not suites and "tests" in root.attrib:
+                    suites = [root]
+
+            for s in suites:
+                tests = int(s.attrib.get("tests", "0"))
+                failures = int(s.attrib.get("failures", "0"))
+                errors = int(s.attrib.get("errors", "0"))
+                skipped = int(s.attrib.get("skipped", "0"))
+                total += tests
+                passed += max(0, tests - failures - errors - skipped)
+
+        except Exception:
+            # Fallback: try to infer from pytest stdout if JUnit parsing fails
+            out = proc.stdout or ""
+            # Try to capture "collected N items" or "N passed" patterns
+            m_collected = re.search(r"collected\s+(\d+)", out)
+            if m_collected:
+                total = int(m_collected.group(1))
+            m_passed = re.search(r"(\d+)\s+passed", out)
+            if m_passed:
+                passed = int(m_passed.group(1))
+            # As last resort, if we have dots in stdout (rare with -q), count them
+            if total == 0:
+                dot_count = out.count(".")
+                if dot_count:
+                    passed = dot_count
+                    total = dot_count
+
+        # Compute coverage percentage by parsing coverage report output
+        coverage_pct = "0"
+        try:
+            cov_rep = subprocess.run([sys.executable, "-m", "coverage", "report", "-m"],
+                                     capture_output=True, text=True)
+            cov_lines = [ln for ln in (cov_rep.stdout or "").splitlines() if ln.strip()]
+            # Look for last line that contains a percentage like "87%"
+            for ln in reversed(cov_lines):
+                m = re.search(r"(\d+)%\s*$", ln)
+                if m:
+                    coverage_pct = m.group(1)
+                    break
+        except Exception:
+            coverage_pct = "0"
+
+        # Print the single required summary line to stdout (exact format)
+        print(f"{passed}/{total} test cases passed. {coverage_pct}% line coverage achieved.")
+
+        # Return 0 if pytest returned success, else 1
+        return 0 if pytest_rc == 0 else 1
+
+    finally:
+        # Clean up the temp junit file quietly
+        try:
+            os.remove(junit_path)
+        except Exception:
+            pass
 
 
 
