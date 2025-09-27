@@ -88,39 +88,55 @@ def handle_install() -> int:
 
 
 def handle_test() -> int:
-    """Run tests with pytest + coverage if available."""
+    """
+    Run tests with pytest + coverage in an autograder-safe way.
+    - Does NOT attempt to install packages.
+    - Handles missing tools gracefully.
+    - Prints X/Y test cases passed and line coverage %.
+    """
+    import subprocess
+    import sys
+    import logging
+
     try:
-        # 1. Run pytest first (quick check of test suite)
-        rc = run_subprocess([sys.executable, "-m", "pytest", "-q"])
-
-        # 2. Run pytest again, this time under coverage
-        cov_rc = run_subprocess([sys.executable, "-m", "coverage", "run", "-m", "pytest"])
-
-        if cov_rc == 0:
-            # 3. Generate coverage report
-            proc = subprocess.run([sys.executable, "-m", "coverage", "report", "-m"],
-                                  capture_output=True, text=True)
-
-            # 4. Parse last line of report for coverage %
-            lines = [ln for ln in proc.stdout.splitlines() if ln.strip()]
-            coverage_percent = "0"
-            if lines:
-                last = lines[-1]
-                parts = last.split()
-                if parts and parts[-1].endswith("%"):
-                    coverage_percent = parts[-1].rstrip("%")
-
-            print(f"X/Y test cases passed. {coverage_percent}% line coverage achieved.")
-            return 0 if rc == 0 else 1
-        else:
-            print("X/Y test cases passed. 0% line coverage achieved.")
-            return 1
-
-    except ModuleNotFoundError:
-        # pytest or coverage missing
-        logger.warning("pytest or coverage not installed.")
+        # Run pytest in quiet mode
+        pytest_rc = subprocess.run([sys.executable, "-m", "pytest", "-q"],
+                                   capture_output=True, text=True)
+        # Capture number of tests passed from pytest stdout
+        passed = pytest_rc.stdout.count(".")
+        total = pytest_rc.stdout.count(".") + pytest_rc.stdout.count("F") + pytest_rc.stdout.count("E")
+        if total == 0:
+            total = passed  # fallback
+    except FileNotFoundError:
+        logging.warning("pytest not installed or missing.")
         print("0/0 test cases passed. 0% line coverage achieved.")
         return 1
+
+    try:
+        # Run coverage measurement
+        cov_proc = subprocess.run([sys.executable, "-m", "coverage", "run", "-m", "pytest"],
+                                  capture_output=True, text=True)
+        if cov_proc.returncode == 0:
+            # Generate coverage report
+            report_proc = subprocess.run([sys.executable, "-m", "coverage", "report", "-m"],
+                                         capture_output=True, text=True)
+            lines = [ln for ln in report_proc.stdout.splitlines() if ln.strip()]
+            coverage_percent = "0"
+            if lines:
+                last_line = lines[-1]
+                parts = last_line.split()
+                if parts and parts[-1].endswith("%"):
+                    coverage_percent = parts[-1].rstrip("%")
+        else:
+            coverage_percent = "0"
+    except FileNotFoundError:
+        logging.warning("coverage not installed or missing.")
+        coverage_percent = "0"
+
+    # Print results in autograder-friendly format
+    print(f"{passed}/{total} test cases passed. {coverage_percent}% line coverage achieved.")
+    return 0 if pytest_rc.returncode == 0 else 1
+
 
 
 # ----------------------------
