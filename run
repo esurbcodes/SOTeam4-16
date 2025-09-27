@@ -138,20 +138,32 @@ def handle_test() -> int:
 
 
 # ----------------------------
-# URL classification
+# URL classification (upd version, fixed?)
 # ----------------------------
 def classify_url(url: str) -> str:
-    """Classify URL into MODEL | DATASET | CODE."""
+    """
+    Classify URL into MODEL | DATASET | CODE.
+    Rules:
+      - HuggingFace dataset pages => DATASET
+      - HuggingFace model pages => MODEL
+      - GitHub / GitLab => CODE
+      - Everything else => CODE
+    (This ensures only true model URLs generate NDJSON output.)
+    """
+    if not url:
+        return "CODE"
     u = url.lower().strip()
-    if "github.com" in u:
-        return "MODEL"
+    # HuggingFace datasets
     if "huggingface.co/datasets/" in u or "/datasets/" in u:
         return "DATASET"
+    # HuggingFace model pages / hubs
     if "huggingface.co" in u:
         return "MODEL"
-    if "gitlab.com" in u:
+    # Git hosts -> treat as code (not model)
+    if "github.com" in u or "gitlab.com" in u or "bitbucket.org" in u:
         return "CODE"
     return "CODE"
+
 
 
 # ----------------------------
@@ -182,108 +194,178 @@ def load_metrics() -> Dict[str, Callable[[Dict[str, Any]], Tuple[float, int]]]:
 
 
 # ----------------------------
-# Metric computation
+# Metric computation (upd version, fixed?)
 # ----------------------------
 def compute_metrics_for_model(resource: Dict[str, Any]) -> Dict[str, Any]:
-    # Load all metric functions dynamically
+    """
+    Run all metric functions (loaded dynamically), ensure scores/clamping/latency types,
+    and produce an output dict conforming to Table 1-style schema.
+    """
     metrics = load_metrics()
     out: Dict[str, Any] = {
         "name": resource.get("name", "unknown"),
         "category": "MODEL",
+        "url": resource.get("model_url") or resource.get("url"),
     }
 
     results: Dict[str, Tuple[float, int]] = {}
-    # Run each metric function on the resource
-    for name, func in metrics.items():
-        try:
-            score, latency = func(resource) # Each metric returns (score, latency)
-            score = float(max(0.0, min(1.0, score))) # Clamp score between 0 and 1
-        except Exception as e:
-            logger.exception("Metric %s failed on %s: %s", name, resource.get("url"), e)
-            score, latency = 0.0, 0
-        results[name] = (score, latency)
 
-    # Flatten results into output dictionary
+    # Run metrics sequentially and measure latency for each
+    for name, func in metrics.items():
+        start = time.perf_counter()
+        try:
+            # metric should return (score_float, latency_ms_int) or (score, latency)
+            score, _ = func(resource)
+            elapsed_ms = int(round((time.perf_counter() - start) * 1000.0))
+            # Use measured elapsed_ms instead of trusting metric latency argument
+            latency_ms = int(elapsed_ms)
+            score = float(max(0.0, min(1.0, float(score))))
+        except Exception as e:
+            logger.exception("Metric %s failed for %s: %s", name, resource.get("url"), e)
+            score, latency_ms = 0.0, 0
+        results[name] = (score, latency_ms)
+
+    # Flatten metrics into output dictionary, handling size_score specially
     for name, (score, latency) in results.items():
         if name == "size_score":
-            # Special handling: same score for multiple hardware
             out[name] = {
-                "raspberry_pi": score,
-                "jetson_nano": score,
-                "desktop_pc": score,
-                "aws_server": score,
+                "raspberry_pi": float(score),
+                "jetson_nano": float(score),
+                "desktop_pc": float(score),
+                "aws_server": float(score),
             }
         else:
-            out[name] = score
-        out[f"{name}_latency"] = latency
+            out[name] = float(score)
+        out[f"{name}_latency"] = int(latency)
 
-    # Net score = average (placeholder until team defines weights), We also compute total latency
-    net_score = sum(val for val, _ in results.values()) / max(1, len(results))
-    net_latency = sum(lat for _, lat in results.values())
-    out["net_score"] = round(net_score, 4)
-    out["net_score_latency"] = net_latency
+    # Compute net_score as normalized/weighted sum (here average; adjust weights if desired)
+    # Ensure net_score in [0,1] and latency summed as int ms
+    metric_scores = [s for s, _ in results.values()] if results else [0.0]
+    net_score = float(max(0.0, min(1.0, sum(metric_scores) / max(1, len(metric_scores)))))
+    net_latency = int(sum(lat for _, lat in results.values()))
+    out["net_score"] = float(round(net_score, 4))
+    out["net_score_latency"] = int(net_latency)
 
     return out
 
-
 # ----------------------------
-# URL File Processing
+# URL File Processing (upd version, fixed?)
 # ----------------------------
 def process_url_file(path_str: str) -> int:
-    """Read URL file, find/clone repos, run metrics, and output NDJSON results."""
-    from src.utils.repo_cloner import clone_repo_to_temp
-    from src.utils.github_link_finder import find_github_url_from_hf
+    """
+    Read URL file where each line is:
+      code_link, dataset_link, model_link
+    - code_link and dataset_link can be blank.
+    - Only model_link entries generate NDJSON output (one JSON object per line).
+    - Preserves input order.
+    - Tracks seen datasets in a set for later reuse.
+    """
+    # lazy imports so 'run install' doesn't fail on missing heavy libs
+    try:
+        from src.utils.repo_cloner import clone_repo_to_temp
+    except Exception:
+        clone_repo_to_temp = None
+    try:
+        from src.utils.github_link_finder import find_github_url_from_hf
+    except Exception:
+        find_github_url_from_hf = None
+
     p = Path(path_str)
     if not p.exists():
         logger.error("URL file not found: %s", path_str)
         print(f"Error: URL file not found: {path_str}", file=sys.stderr)
         return 1
 
-    urls: List[str] = [ln.strip() for ln in p.read_text(encoding="utf-8").splitlines() if ln.strip()]
-    if not urls:
-        logger.info("URL file empty.")
-        return 0
-    
-    resources = [
-        {
-            "url": u,
-            "category": classify_url(u),
-            "name": (
-                "/".join(u.rstrip('/').split('/')[-2:]) if "github.com" in u
-                else u.split('huggingface.co/')[-1].rstrip('/')
-            )
-        }
-        for u in urls
-    ]
-    models = [r for r in resources if r["category"] == "MODEL"]
+    # Read CSV-like lines (comma-separated triples). Use csv.reader to be robust.
+    import csv
+    resources: List[Dict[str, Any]] = []
+    seen_datasets = set()
 
+    with p.open("r", encoding="utf-8") as fh:
+        reader = csv.reader(fh)
+        for row in reader:
+            # Normalize row to 3 fields: code, dataset, model
+            # row may contain >3 or <3 entries; handle gracefully.
+            # strip whitespace for each value
+            parts = [part.strip() for part in (row + ["", "", ""])[:3]]
+            code_url, dataset_url, model_url = parts[0] or None, parts[1] or None, parts[2] or None
+
+            # If there is a dataset_url and we haven't seen it yet, add to seen_datasets
+            if dataset_url:
+                if dataset_url not in seen_datasets:
+                    seen_datasets.add(dataset_url)
+
+            # Build resource object (keep all three so metrics/utilities can use them)
+            name = None
+            if model_url:
+                if "huggingface.co" in model_url:
+                    name = model_url.split("huggingface.co/")[-1].rstrip("/")
+                elif "github.com" in model_url:
+                    name = "/".join(model_url.rstrip("/").split("/")[-2:])
+                else:
+                    name = model_url.rstrip("/").split("/")[-1]
+
+            resource = {
+                "code_url": code_url,
+                "dataset_url": dataset_url,
+                "model_url": model_url,
+                "category": classify_url(model_url) if model_url else "CODE",  # default CODE if model missing
+                "name": name or "unknown",
+                "url": model_url or code_url or dataset_url,
+            }
+            resources.append(resource)
+
+    # Filter only lines that include a model URL and classify as MODEL
+    models = [r for r in resources if r.get("model_url") and classify_url(r["model_url"]) == "MODEL"]
+
+    # For each model, try to find a repository to clone (github or hf->github)
     for r in models:
         repo_to_clone = None
-        if "github.com" in r['url']:
-            repo_to_clone = r['url']
-        elif "huggingface.co" in r['url']:
-            repo_to_clone = find_github_url_from_hf(r['name'])
-
-        if repo_to_clone:
-            r['local_path'] = clone_repo_to_temp(repo_to_clone)
-        else:
-            r['local_path'] = None
-
-    with ThreadPoolExecutor(max_workers=min(8, os.cpu_count() or 1)) as exe:
-        futures = {exe.submit(compute_metrics_for_model, r): r for r in models}
-        for fut in as_completed(futures):
+        model_url = r.get("model_url", "") or ""
+        if "github.com" in model_url:
+            repo_to_clone = model_url
+        elif "huggingface.co" in model_url and find_github_url_from_hf:
             try:
-                result = fut.result()
-                print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
-                sys.stdout.flush()
-            except Exception as exc:
-                logger.exception("Failed to compute metrics: %s", exc)
-            finally:
-                resource_done = futures[fut]
-                if resource_done.get('local_path'):
-                    logger.info(f"Cleaning up temp directory: {resource_done['local_path']}")
-                    shutil.rmtree(resource_done['local_path'], onerror=remove_readonly)
-            
+                # find_github_url_from_hf should return a github URL or None
+                repo_to_clone = find_github_url_from_hf(r["name"])
+            except Exception as e:
+                logger.debug("hf->github mapping failed for %s: %s", r["name"], e)
+                repo_to_clone = None
+
+        # Clone if we found a repository location and cloning helper available
+        if repo_to_clone and clone_repo_to_temp:
+            try:
+                local_dir = clone_repo_to_temp(repo_to_clone)
+                # store both keys for compatibility with different metrics
+                r["local_path"] = local_dir
+                r["local_dir"] = local_dir
+            except Exception as e:
+                logger.warning("Failed to clone %s -> %s: %s", repo_to_clone, r["url"], e)
+                r["local_path"] = None
+                r["local_dir"] = None
+        else:
+            r["local_path"] = None
+            r["local_dir"] = None
+
+    # Process sequentially to preserve input order and avoid stdout interleaving
+    for r in models:
+        try:
+            result = compute_metrics_for_model(r)
+            # Ensure NDJSON purity: write only JSON objects to stdout
+            sys.stdout.write(json.dumps(result, ensure_ascii=False, separators=(",", ":")) + "\n")
+            sys.stdout.flush()
+        except Exception as exc:
+            logger.exception("Failed computing metrics for %s: %s", r.get("url"), exc)
+            print(f"Error computing metrics for {r.get('url')}", file=sys.stderr)
+        finally:
+            # cleanup any cloned local directories
+            local = r.get("local_path") or r.get("local_dir")
+            if local:
+                try:
+                    shutil.rmtree(local, onerror=remove_readonly)
+                except Exception:
+                    logger.debug("Cleanup failed for %s", local)
+
     return 0
 
 
@@ -313,7 +395,3 @@ def main(argv: List[str] | None = None) -> int:
 # If run directly, call main() and exit with this code
 if __name__ == "__main__":
     sys.exit(main())
-
-
-
-
