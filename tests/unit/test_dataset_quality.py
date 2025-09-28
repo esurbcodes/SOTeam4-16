@@ -10,7 +10,7 @@ def test_dataset_quality_high_score(mocker):
     """Test a dataset with all quality indicators."""
     mocker.patch('src.metrics.dataset_quality.find_dataset_url_from_hf', return_value="https://huggingface.co/datasets/squad")
     mocker.patch('src.metrics.dataset_quality.dataset_info', return_value=FakeDatasetInfo(cardData={"dataset_card": "some content"}, downloads=5000, likes=50))
-    
+
     score, latency = metric({"name": "some/model"})
     assert score == 1.0 # 0.5 (card) + 0.3 (downloads) + 0.2 (likes)
 
