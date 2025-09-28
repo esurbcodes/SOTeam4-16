@@ -65,10 +65,10 @@ class HuggingFaceService:
         try:
             info = self.api.model_info(model_id)
         except hf_api.HfHubHTTPError as e:
-            print(f"❌ Error: Could not fetch model '{model_id}' — {e}")
+            # print(f"❌ Error: Could not fetch model '{model_id}' — {e}")
             return None
         except Exception as e:
-            print(f"❌ Unexpected error: {e}")
+            # print(f"❌ Unexpected error: {e}")
             return None
 
         model_name = info.modelId
@@ -102,7 +102,7 @@ class HuggingFaceService:
         try:
             return self.api.model_info(model_id)
         except Exception as e:
-            print(f"Could not fetch raw model info for '{model_id}': {e}")
+            # print(f"Could not fetch raw model info for '{model_id}': {e}")
             return None
         
 
@@ -116,12 +116,12 @@ if __name__ == "__main__":
     metadata = service.fetch_model_metadata(model_id)
 
     if metadata:
-        print("✅ Test run — Hugging Face model metadata:")
-        print("Name:", metadata.modelName)
-        print("Category:", metadata.modelCategory)
-        print("Size:", metadata.pretty_size())  # ✅ human readable size
-        print("License:", metadata.license)
-        print("Downloads:", metadata.timesDownloaded)
-        print("Likes:", metadata.modelLikes)
-        print("Last Modified:", metadata.lastModified)
-        print("Files:", metadata.files)
+        # print("✅ Test run — Hugging Face model metadata:")
+        # print("Name:", metadata.modelName)
+        # print("Category:", metadata.modelCategory)
+        # print("Size:", metadata.pretty_size())  # ✅ human readable size
+        # print("License:", metadata.license)
+       #  print("Downloads:", metadata.timesDownloaded)
+        # print("Likes:", metadata.modelLikes)
+       #  print("Last Modified:", metadata.lastModified)
+        # print("Files:", metadata.files)
