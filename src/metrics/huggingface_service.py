@@ -46,7 +46,15 @@ class HuggingFaceService:
     """Wrapper around the Hugging Face API to fetch model information."""
 
     def __init__(self, token: Optional[str] = None):
-        self.api = HfApi(token=token)
+        try:
+            self.api = HfApi(token=token)
+            # You can optionally add a login check to validate the token immediately
+            if token:
+                self.api.whoami()
+        except Exception as e:
+            logger.error(f"Failed to initialize HuggingFaceService, possibly due to an invalid token: {e}")
+            # Set api to None so the service fails gracefully later
+            self.api = None
 
     def fetch_model_metadata(self, model_id: str) -> Optional[ModelMetadata]:
         """Fetch metadata for a given model ID from Hugging Face Hub.
