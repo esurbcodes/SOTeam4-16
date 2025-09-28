@@ -55,4 +55,4 @@ if __name__ == "__main__":
         "alice", "alice", "bob", "carol", "alice", "bob", "carol", "carol"
     ]
     score, latency = compute_bus_factor(example_commits)
-    print(f"Bus Factor Score: {score:.3f}, Latency: {latency} ms")
+    #print(f"Bus Factor Score: {score:.3f}, Latency: {latency} ms")
