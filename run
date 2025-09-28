@@ -156,7 +156,7 @@ def handle_test() -> int:
     import tempfile, xml.etree.ElementTree as ET, importlib.util, subprocess, sys, os
 
     # Keep plugins quiet & make 'src' imports work
-    os.environ.setdefault("PYTEST_DISABLE_PLUGIN_AUTOLOAD", "1")
+    # os.environ.setdefault("PYTEST_DISABLE_PLUGIN_AUTOLOAD", "1")
     os.environ.setdefault("PYTHONPATH", os.pathsep.join([os.getcwd(), str(Path.cwd() / "src")]))
 
     # 1) Run pytest once, capture counts from JUnit XML (authoritative)
