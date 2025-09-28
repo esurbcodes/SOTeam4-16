@@ -67,24 +67,24 @@ try:
 except ValueError:
     LOG_LEVEL_ENV = 0
 
-# 0 -> disable logging output, 1 -> INFO, 2 -> DEBUG
-level_map = {0: 100, 1: logging.INFO, 2: logging.DEBUG}  # 100 > CRITICAL disables output
+log_level = {1: logging.INFO, 2: logging.DEBUG}.get(LOG_LEVEL_ENV)
+handlers = [logging.StreamHandler(sys.stderr)] # Default to stderr
 
-handlers = []
-if LOG_FILE:
-    try:
-        handlers = [logging.FileHandler(LOG_FILE, mode="w", encoding="utf-8")]
-    except Exception:
-        # Invalid path: fall back to stderr instead of crashing
-        handlers = [logging.StreamHandler(sys.stderr)]
-else:
-    handlers = [logging.StreamHandler(sys.stderr)]
+if LOG_LEVEL_ENV > 0 and log_level:
+    if LOG_FILE:
+        try:
+            # This will attempt to open the file, but will not crash on a bad path
+            handlers = [logging.FileHandler(LOG_FILE, mode="w", encoding="utf-8")]
+        except Exception:
+            # If the path is bad, we just stick with the stderr handler
+            pass
 
-logging.basicConfig(
-    level=level_map.get(LOG_LEVEL_ENV, 100),
-    handlers=handlers,
-    format="%(asctime)s %(levelname)s %(message)s"
-)
+    logging.basicConfig(
+        level=log_level,
+        handlers=handlers,
+        format="%(asctime)s %(levelname)s %(message)s"
+    )
+
 logger = logging.getLogger("phase1_cli")
 
 
