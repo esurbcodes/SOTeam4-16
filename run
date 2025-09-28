@@ -275,48 +275,54 @@ def load_metrics() -> Dict[str, Callable[[Dict[str, Any]], Tuple[float, int]]]:
 # Metric computation (upd version, fixed?)
 # ----------------------------
 def compute_metrics_for_model(resource: Dict[str, Any]) -> Dict[str, Any]:
-    """Compute all metrics for a single model resource."""
+    """
+    Run all metric functions (loaded dynamically), ensure scores/clamping/latency types,
+    and produce an output dict conforming to Table 1-style schema.
+    """
     metrics = load_metrics()
-
-    # --- Handle the category metric separately ---
-    final_category = "Model" # Default category
-    category_latency = 0
-    if 'category' in metrics:
-        category_func = metrics.pop('category') # Remove it from the main dict
-        try:
-            final_category, category_latency = category_func(resource)
-        except Exception:
-            final_category = "Model (Error)"
-
     out: Dict[str, Any] = {
         "name": resource.get("name", "unknown"),
-        "category": final_category,
-        "url": resource.get("url"),
-        "category_latency": category_latency
+        "category": "MODEL",
+        "url": resource.get("model_url") or resource.get("url"),
     }
 
-    # --- Process the remaining numeric metrics ---
     results: Dict[str, Tuple[float, int]] = {}
-    for name, func in metrics.items():
-        try:
-            score, latency = func(resource)
-            score = float(max(0.0, min(1.0, score)))
-        except Exception as e:
-            logger.exception("Metric %s failed on %s: %s", name, resource.get("url"), e)
-            score, latency = 0.0, 0
-        results[name] = (score, latency)
 
+    # Run metrics sequentially and measure latency for each
+    for name, func in metrics.items():
+        start = time.perf_counter()
+        try:
+            # metric should return (score_float, latency_ms_int) or (score, latency)
+            score, _ = func(resource)
+            elapsed_ms = int(round((time.perf_counter() - start) * 1000.0))
+            # Use measured elapsed_ms instead of trusting metric latency argument
+            latency_ms = int(elapsed_ms)
+            score = float(max(0.0, min(1.0, float(score))))
+        except Exception as e:
+            logger.exception("Metric %s failed for %s: %s", name, resource.get("url"), e)
+            score, latency_ms = 0.0, 0
+        results[name] = (score, latency_ms)
+
+    # Flatten metrics into output dictionary, handling size_score specially
     for name, (score, latency) in results.items():
         if name == "size_score":
-            out[name] = {"raspberry_pi": score, "jetson_nano": score, "desktop_pc": score, "aws_server": score}
+            out[name] = {
+                "raspberry_pi": float(score),
+                "jetson_nano": float(score),
+                "desktop_pc": float(score),
+                "aws_server": float(score),
+            }
         else:
-            out[name] = score
-        out[f"{name}_latency"] = latency
+            out[name] = float(score)
+        out[f"{name}_latency"] = int(latency)
 
-    net_score = sum(val for val, _ in results.values()) / max(1, len(results)) if results else 0.0
-    net_latency = sum(lat for _, lat in results.values())
-    out["net_score"] = round(net_score, 4)
-    out["net_score_latency"] = net_latency
+    # Compute net_score as normalized/weighted sum (here average; adjust weights if desired)
+    # Ensure net_score in [0,1] and latency summed as int ms
+    metric_scores = [s for s, _ in results.values()] if results else [0.0]
+    net_score = float(max(0.0, min(1.0, sum(metric_scores) / max(1, len(metric_scores)))))
+    net_latency = int(sum(lat for _, lat in results.values()))
+    out["net_score"] = float(round(net_score, 4))
+    out["net_score_latency"] = int(net_latency)
 
     return out
 
