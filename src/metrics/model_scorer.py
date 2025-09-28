@@ -19,6 +19,7 @@ def score_model_size(metadata: ModelMetadata) -> int:
 # -------------------------
 # Temporary test block
 # -------------------------
+"""
 if __name__ == "__main__":
     service = HuggingFaceService()
     model_id = "bert-base-uncased"  # example model
@@ -30,3 +31,4 @@ if __name__ == "__main__":
         print("Model:", metadata.modelName)
         print("Size:", metadata.pretty_size())
         print("Score:", score)
+"""
