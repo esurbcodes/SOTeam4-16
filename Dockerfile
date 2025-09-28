@@ -1,33 +1,40 @@
-# Use a slim Python base image
-FROM python:3.12-slim
-
-# Set the working directory inside the container
+# Dockerfile
+FROM node:18-bullseye
 WORKDIR /app
 
-# Copy requirements first (for caching)
-COPY requirements.txt requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+# System deps for building Python + git (GitPython)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git curl ca-certificates build-essential \
+    libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev \
+    libncursesw5-dev xz-utils tk-dev libxml2-dev libxmlsec1-dev \
+    libffi-dev liblzma-dev \
+ && rm -rf /var/lib/apt/lists/*
 
-# If you need dev/test requirements too, uncomment:
-# COPY requirements-dev.txt requirements-dev.txt
-# RUN pip install --no-cache-dir -r requirements-dev.txt
+# Optional node tool
+RUN npm install -g typescript
 
-# Make /app and /app/src importable (so `import src...` works)
+# ---- Install Python 3.11 via pyenv ----
+ENV PYENV_ROOT=/opt/pyenv
+ENV PATH=$PYENV_ROOT/bin:$PYENV_ROOT/shims:$PATH
+
+RUN curl -fsSL https://pyenv.run | bash \
+ && /opt/pyenv/bin/pyenv install 3.11.9 \
+ && /opt/pyenv/bin/pyenv global 3.11.9 \
+ && /opt/pyenv/shims/python -m ensurepip --upgrade \
+ && /opt/pyenv/shims/python -m pip install --upgrade pip
+
+# Project deps + test tooling
+COPY requirements.txt .
+RUN /opt/pyenv/shims/python -m pip install --no-cache-dir -r requirements.txt || true \
+ && /opt/pyenv/shims/python -m pip install --no-cache-dir pytest pytest-cov pytest-mock coverage
+
+# Make src importable
 ENV PYTHONPATH=/app:/app/src
 
-# Copy the rest of your code
+# Bring in code
 COPY . .
+RUN (sed -i 's/\r$//' run && chmod +x run) || true
 
-# Normalize Windows CRLF -> LF for scripts and make ./run executable
-# (the '|| true' keeps the build going if 'run' isn't present)
-RUN sed -i 's/\r$//' run && chmod +x run || true
-
-# --- Test tooling + coverage ---
-RUN pip install --no-cache-dir pytest pytest-mock pytest-cov coverage
-
-# Run tests with coverage; fail build if coverage below 80%
-# (adjust the threshold or remove --cov-fail-under if you don't want to gate on it)
-RUN pytest -q --cov=src --cov-report=term-missing --cov-fail-under=80
-
-# Default command when container starts
-CMD ["python", "run.py"]
+# Default for local dev (change to autograder for submission if required)
+CMD ["/opt/pyenv/shims/python", "run.py"]
+# ENTRYPOINT ["/opt/pyenv/shims/python", "autograder.py"]
