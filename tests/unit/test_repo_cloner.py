@@ -19,3 +19,4 @@ def test_clone_repo_failure(mocker):
     assert result is None
     # Assert that the cleanup function (shutil.rmtree) was called
     mock_rmtree.assert_called_once()
+    
