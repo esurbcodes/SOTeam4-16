@@ -41,3 +41,4 @@ def test_no_github_link_found(mocker):
     found_url = find_github_url_from_hf("some-hf-model/some-model")
 
     assert found_url is None
+    
