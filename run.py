@@ -30,65 +30,31 @@ import sys           # for system-specific functions
 import time
 import shutil
 import stat
-import io
-from contextlib import redirect_stdout, redirect_stderr
 
 
 from concurrent.futures import ThreadPoolExecutor, as_completed  # for parallel tasks
 from pathlib import Path       # for safer path operations
 from typing import Any, Dict, List, Tuple, Callable  # type hints
 
-os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
-os.environ.setdefault("TQDM_DISABLE", "1")  # extra belt-and-suspenders
-os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
-
-
-REPO_ROOT = Path(__file__).resolve().parent
-SRC_DIR = REPO_ROOT / "src"
-
-# Make imports like `import src...` work in this process
-for p in (str(REPO_ROOT), str(SRC_DIR)):
-    if p not in sys.path:
-        sys.path.insert(0, p)
-
-# Ensure child processes (pytest/coverage) inherit it too
-_prev = os.environ.get("PYTHONPATH", "")
-parts = [str(REPO_ROOT), str(SRC_DIR)]
-if _prev:
-    parts.append(_prev)
-os.environ["PYTHONPATH"] = os.pathsep.join(parts)
-
-
 # ----------------------------
 # Logging setup (reads env)
 # ----------------------------
-
-LOG_FILE = os.environ.get("LOG_FILE")
+LOG_FILE = os.environ.get("LOG_FILE") # Location of the log file
 try:
-    LOG_LEVEL_ENV = int(os.environ.get("LOG_LEVEL", "0"))
+    LOG_LEVEL_ENV = int(os.environ.get("LOG_LEVEL", "0")) # Read log level (0,1,2)
 except ValueError:
     LOG_LEVEL_ENV = 0
 
-# 0 -> disable logging output, 1 -> INFO, 2 -> DEBUG
-level_map = {0: 100, 1: logging.INFO, 2: logging.DEBUG}  # 100 > CRITICAL disables output
+# Map numeric env value -> actual logging level
+_log_level = {0: logging.WARNING, 1: logging.INFO, 2: logging.DEBUG}.get(LOG_LEVEL_ENV, logging.WARNING)
 
-handlers = []
+# Configure logging: either to a file or to stderr
 if LOG_FILE:
-    try:
-        handlers = [logging.FileHandler(LOG_FILE, mode="w", encoding="utf-8")]
-    except Exception:
-        # Invalid path: fall back to stderr instead of crashing
-        handlers = [logging.StreamHandler(sys.stderr)]
+    logging.basicConfig(filename=LOG_FILE, level=_log_level, format="%(asctime)s %(levelname)s %(message)s")
 else:
-    handlers = [logging.StreamHandler(sys.stderr)]
+    logging.basicConfig(stream=sys.stderr, level=_log_level, format="%(asctime)s %(levelname)s %(message)s")
 
-logging.basicConfig(
-    level=level_map.get(LOG_LEVEL_ENV, 100),
-    handlers=handlers,
-    format="%(asctime)s %(levelname)s %(message)s"
-)
-logger = logging.getLogger("phase1_cli")
-
+logger = logging.getLogger("phase1_cli") # CLI tool named logger
 
 def remove_readonly(func, path, excinfo):
     """Error handler for shutil.rmtree that removes read-only permissions."""
@@ -106,304 +72,185 @@ def run_subprocess(cmd: List[str]) -> int: # cmd is a variable of type: List[str
     except Exception as exc:  # safety net
         logger.error("Subprocess failed: %s", exc)
         return 1
-        
-# --- AUTOGRADER BOOTSTRAP HELPERS ---
-def _have(mod: str) -> bool:
-    try:
-        import importlib.util
-        return importlib.util.find_spec(mod) is not None
-    except Exception:
-        return False
-
-def _pip_install(*args: str) -> int:
-    # install into the exact interpreter the grader is using
-    return run_subprocess([sys.executable, "-m", "pip", *args])
-
-def ensure_test_deps() -> None:
-    # runtime deps
-    if Path("requirements.txt").exists():
-        _pip_install("install", "--no-cache-dir", "-r", "requirements.txt")
-    # dev/test deps
-    if Path("requirements-dev.txt").exists():
-        _pip_install("install", "--no-cache-dir", "-r", "requirements-dev.txt")
-    # fallback if grader ignored requirements-dev.txt
-    if not (_have("pytest") and _have("coverage")):
-        _pip_install("install", "--no-cache-dir", "pytest", "pytest-cov", "pytest-mock", "coverage")
-
 
 
 def handle_install() -> int:
-    """Install dependencies from requirements.txt (and dev deps if present)."""
-    rc = 0
+    """Install dependencies from requirements.txt."""
     req = Path("requirements.txt")
-    if req.exists():
-        rc = run_subprocess([sys.executable, "-m", "pip", "install", "-r", str(req)])
-        if rc != 0:
-            logger.error("Dependency installation failed (exit %d)", rc)
-            return rc
-
-    dev = Path("requirements-dev.txt")
-    if dev.exists():
-        run_subprocess([sys.executable, "-m", "pip", "install", "-r", str(dev)])
-
+    if not req.exists(): # if no requirements.txt, then do nothing
+        logger.info("No requirements.txt found; nothing to install.")
+        return 0
+    cmd = [sys.executable, "-m", "pip", "install", "-r", str(req)]
+    rc = run_subprocess(cmd)
+    if rc != 0:
+        logger.error("Dependency installation failed (exit %d)", rc)
     return rc
 
-def _ensure_test_tools() -> None:
-    """Best-effort install pytest/coverage/pytest-mock if missing (quiet, no crash)."""
-    try:
-        import importlib.util, subprocess, sys
-        needed = []
-        for mod in ("pytest", "coverage", "pytest_mock"):
-            if importlib.util.find_spec(mod) is None:
-                # package name differs for pytest-mock:
-                needed.append("pytest-mock" if mod == "pytest_mock" else mod)
-        if needed:
-            subprocess.run(
-                [sys.executable, "-m", "pip", "install", "--no-cache-dir", *needed],
-                check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-            )
-    except Exception:
-        pass
 
 def handle_test() -> int:
-    """
-    Run the test suite once under coverage and print exactly:
-    'X/Y test cases passed. Z% line coverage achieved.'
-
-    Returns:
-      0 if pytest exit code is 0 (tests passed), otherwise 1.
-    """
-
-    import tempfile
-    import xml.etree.ElementTree as ET
-    import re
-    
-    _ensure_test_tools()
-
-    # Create a temporary file for JUnit XML output (mkstemp avoids Windows locking problems)
-    junit_fd, junit_path = tempfile.mkstemp(suffix=".xml")
-    os.close(junit_fd)
-
+    """Run tests with pytest + coverage if available."""
     try:
-        # Clear any previous coverage data to get a fresh measurement
-        subprocess.run([sys.executable, "-m", "coverage", "erase"], capture_output=True, text=True)
+        # 1. Run pytest (quiet mode: -q). This executes the test suite.
+        rc = run_subprocess([sys.executable, "-m", "pytest", "-q"])
 
-        # Run tests once under coverage and produce JUnit XML for reliable counts
-        proc = subprocess.run(
-            [sys.executable, "-m", "coverage", "run", "-m", "pytest", "-q", f"--junitxml={junit_path}"],
-            capture_output=True,
-            text=True
-        )
-        pytest_rc = proc.returncode
+        # 2. Run pytest again, this time under coverage measurement.
+        #    "coverage run -m pytest" records line coverage data.
+        cov_rc = run_subprocess([sys.executable, "-m", "coverage", "run", "-m", "pytest"])
 
-        # Default totals
-        total = 0
-        passed = 0
+        if cov_rc == 0:
+            # 3. If coverage ran successfully, generate a coverage report.
+            #    capture_output=True -> we store the stdout to parse later.
+            proc = subprocess.run([sys.executable, "-m", "coverage", "report", "-m"],
+                                  capture_output=True, text=True)
 
-        # Try to parse JUnit XML for robust counts (supports single testsuite or multiple)
-        try:
-            tree = ET.parse(junit_path)
-            root = tree.getroot()
+            # 4. Split stdout into lines, removing any empty ones.
+            lines = [ln for ln in proc.stdout.splitlines() if ln.strip()]
 
-            # collect all <testsuite> nodes (root may be testsuite or testsuites)
-            suites = []
-            if root.tag == "testsuite":
-                suites = [root]
-            else:
-                # findall with .// to capture nested testsuites too
-                suites = root.findall(".//testsuite")
-                # if still empty and root itself has attributes, try root as a suite
-                if not suites and "tests" in root.attrib:
-                    suites = [root]
+            # 5. Initialize coverage percent as "0" in case parsing fails.
+            coverage_percent = "0"
 
-            for s in suites:
-                tests = int(s.attrib.get("tests", "0"))
-                failures = int(s.attrib.get("failures", "0"))
-                errors = int(s.attrib.get("errors", "0"))
-                skipped = int(s.attrib.get("skipped", "0"))
-                total += tests
-                passed += max(0, tests - failures - errors - skipped)
+            # 6. If there’s at least one line in the report,
+            #    extract the last line (summary row of coverage output).
+            if lines:
+                last = lines[-1]
+                parts = last.split()
 
-        except Exception:
-            # Fallback: try to infer from pytest stdout if JUnit parsing fails
-            out = proc.stdout or ""
-            # Try to capture "collected N items" or "N passed" patterns
-            m_collected = re.search(r"collected\s+(\d+)", out)
-            if m_collected:
-                total = int(m_collected.group(1))
-            m_passed = re.search(r"(\d+)\s+passed", out)
-            if m_passed:
-                passed = int(m_passed.group(1))
-            # As last resort, if we have dots in stdout (rare with -q), count them
-            if total == 0:
-                dot_count = out.count(".")
-                if dot_count:
-                    passed = dot_count
-                    total = dot_count
+                # 7. The last column in the summary usually has coverage like "85%".
+                #    If so, strip the "%" and store just the number.
+                if parts and parts[-1].endswith("%"):
+                    coverage_percent = parts[-1].rstrip("%")
 
-        # Compute coverage percentage by parsing coverage report output
-        coverage_pct = "0"
-        try:
-            cov_rep = subprocess.run([sys.executable, "-m", "coverage", "report", "-m"],
-                                     capture_output=True, text=True)
-            cov_lines = [ln for ln in (cov_rep.stdout or "").splitlines() if ln.strip()]
-            # Look for last line that contains a percentage like "87%"
-            for ln in reversed(cov_lines):
-                m = re.search(r"(\d+)%\s*$", ln)
-                if m:
-                    coverage_pct = m.group(1)
-                    break
-        except Exception:
-            coverage_pct = "0"
+            # 8. Print test results (X/Y is placeholder, coverage% is real).
+            print(f"X/Y test cases passed. {coverage_percent}% line coverage achieved.")
 
-        # Print the single required summary line to stdout (exact format)
-        print(f"{passed}/{total} test cases passed. {coverage_pct}% line coverage achieved.")
+            # 9. Return 0 if pytest passed (rc == 0), else return 1 for failure.
+            return 0 if rc == 0 else 1
+        else:
+            # 10. If coverage run failed, print fallback message with 0%.
+            print("X/Y test cases passed. 0% line coverage achieved.")
+            return 1
 
-        # Return 0 if pytest returned success, else 1
-        return 0 if pytest_rc == 0 else 1
-
-    finally:
-        # Clean up the temp junit file quietly
-        try:
-            os.remove(junit_path)
-        except Exception:
-            pass
-
+    except FileNotFoundError:
+        # 11. If pytest or coverage tools are missing, warn the user.
+        logger.warning("pytest or coverage not installed.")
+        print("0/0 test cases passed. 0% line coverage achieved.")
+        return 1
 
 
 # ----------------------------
-# URL classification (upd version, fixed?)
+# URL classification
 # ----------------------------
-from urllib.parse import urlparse
-
 def classify_url(url: str) -> str:
     """
-    Return one of: MODEL | DATASET | CODE
-    - HuggingFace datasets -> DATASET
-    - HuggingFace models/Spaces/etc. -> MODEL
-    - GitHub/GitLab/Bitbucket -> CODE
-    - Everything else -> CODE
-    """
-    if not isinstance(url, str):
-        return "CODE"
+    Classify URL into one of: MODEL | DATASET | CODE.
 
-    u = url.strip()
+    Rules:
+      - HuggingFace dataset pages -> DATASET
+      - Other HuggingFace pages (models, spaces, etc.) -> MODEL
+      - Git hosts (GitHub/GitLab/Bitbucket) -> CODE
+      - Everything else -> CODE
+    """
+    u = (url or "").strip().lower()
     if not u:
         return "CODE"
 
-    p = urlparse(u)
-    host = (p.netloc or "").lower()
-    path = (p.path or "").lower().lstrip("/")
-
-    if host.endswith("huggingface.co"):
-        if path.startswith("datasets/"):
+    # HuggingFace first
+    if "huggingface.co" in u:
+        if "huggingface.co/datasets/" in u or "/datasets/" in u:
             return "DATASET"
         return "MODEL"
 
-    if host in {"github.com", "gitlab.com", "bitbucket.org"}:
+    # Git hosting -> treat as code
+    if "github.com" in u or "gitlab.com" in u or "bitbucket.org" in u:
         return "CODE"
 
     return "CODE"
+
 
 
 # ----------------------------
 # Dynamic Metric Loader
 # ----------------------------
 def load_metrics() -> Dict[str, Callable[[Dict[str, Any]], Tuple[float, int]]]:
-    """Import metric modules from src/metrics; skip or silence ones that fail/print."""
-    metrics: Dict[str, Callable] = {}
+    """
+    Import all metric modules from src/metrics.
+    Each must define: metric(resource) -> (score, latency_ms).
+    """
     metrics_pkg = "src.metrics"
+    metrics: Dict[str, Callable] = {}
     try:
-        package = importlib.import_module(metrics_pkg)
+        package = importlib.import_module(metrics_pkg) # Import src.metrics package
     except ModuleNotFoundError:
-        logger.debug("metrics package not found; proceeding with none")
+        logger.error("Could not find metrics package: %s", metrics_pkg)
         return metrics
-
+        
+    # Discover all modules inside src.metrics
     for _, mod_name, is_pkg in pkgutil.iter_modules(package.__path__, package.__name__ + "."):
         if is_pkg:
             continue
-        try:
-            # silence *any* print() in module top-level during import
-            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-                module = importlib.import_module(mod_name)
-        except Exception as e:
-            logger.debug("Skipping metric %s (import failed): %s", mod_name, e)
-            continue
-        func = getattr(module, "metric", None)
-        if callable(func):
-            metrics[mod_name.split(".")[-1]] = func
+        module = importlib.import_module(mod_name) # Import each module dynamically
+        if hasattr(module, "metric"): # Then check if it has a metric() function
+            metric_name = mod_name.split(".")[-1]
+            metrics[metric_name] = getattr(module, "metric") # Store in dict
     return metrics
 
 
-
-
 # ----------------------------
-# Metric computation (upd version, fixed?)
+# Metric computation
 # ----------------------------
 def compute_metrics_for_model(resource: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Run all metric functions (loaded dynamically), ensure scores/clamping/latency types,
-    and produce an output dict conforming to Table 1-style schema.
-    """
+    # Load all metric functions dynamically
     metrics = load_metrics()
     out: Dict[str, Any] = {
         "name": resource.get("name", "unknown"),
         "category": "MODEL",
-        "url": resource.get("model_url") or resource.get("url"),
     }
 
     results: Dict[str, Tuple[float, int]] = {}
-
-    # Run metrics sequentially and measure latency for each
+    # Run each metric function on the resource
     for name, func in metrics.items():
-        start = time.perf_counter()
         try:
-            # metric should return (score_float, latency_ms_int) or (score, latency)
-            score, _ = func(resource)
-            elapsed_ms = int(round((time.perf_counter() - start) * 1000.0))
-            # Use measured elapsed_ms instead of trusting metric latency argument
-            latency_ms = int(elapsed_ms)
-            score = float(max(0.0, min(1.0, float(score))))
+            score, latency = func(resource) # Each metric returns (score, latency)
+            score = float(max(0.0, min(1.0, score))) # Clamp score between 0 and 1
         except Exception as e:
-            logger.exception("Metric %s failed for %s: %s", name, resource.get("url"), e)
-            score, latency_ms = 0.0, 0
-        results[name] = (score, latency_ms)
+            logger.exception("Metric %s failed on %s: %s", name, resource.get("url"), e)
+            score, latency = 0.0, 0
+        results[name] = (score, latency)
 
-    # Flatten metrics into output dictionary, handling size_score specially
+    # Flatten results into output dictionary
     for name, (score, latency) in results.items():
         if name == "size_score":
+            # Special handling: same score for multiple hardware
             out[name] = {
-                "raspberry_pi": float(score),
-                "jetson_nano": float(score),
-                "desktop_pc": float(score),
-                "aws_server": float(score),
+                "raspberry_pi": score,
+                "jetson_nano": score,
+                "desktop_pc": score,
+                "aws_server": score,
             }
         else:
-            out[name] = float(score)
-        out[f"{name}_latency"] = int(latency)
+            out[name] = score
+        out[f"{name}_latency"] = latency
 
-    # Compute net_score as normalized/weighted sum (here average; adjust weights if desired)
-    # Ensure net_score in [0,1] and latency summed as int ms
-    metric_scores = [s for s, _ in results.values()] if results else [0.0]
-    net_score = float(max(0.0, min(1.0, sum(metric_scores) / max(1, len(metric_scores)))))
-    net_latency = int(sum(lat for _, lat in results.values()))
-    out["net_score"] = float(round(net_score, 4))
-    out["net_score_latency"] = int(net_latency)
+    # Net score = average (placeholder until team defines weights), We also compute total latency
+    net_score = sum(val for val, _ in results.values()) / max(1, len(results))
+    net_latency = sum(lat for _, lat in results.values())
+    out["net_score"] = round(net_score, 4)
+    out["net_score_latency"] = net_latency
 
     return out
 
+
 # ----------------------------
-# URL File Processing (upd version, fixed?)
+# URL File Processing
 # ----------------------------
 def process_url_file(path_str: str) -> int:
     """
-    Read URL file where each line is:
-      code_link, dataset_link, model_link
-    - code_link and dataset_link can be blank.
-    - Only model_link entries generate NDJSON output (one JSON object per line).
-    - Preserves input order.
+    Accepts either:
+      • one URL per line, or
+      • CSV rows: code_link, dataset_link, model_link
+    Emits exactly one NDJSON object per MODEL entry.
     """
-    # lazy imports so 'run install' doesn't fail on missing heavy libs
+    # lazy imports so `./run install` doesn't break if utils are missing
     try:
         from src.utils.repo_cloner import clone_repo_to_temp
     except Exception:
@@ -419,14 +266,12 @@ def process_url_file(path_str: str) -> int:
         print(f"Error: URL file not found: {path_str}", file=sys.stderr)
         return 1
 
-    # Read CSV-like lines (comma-separated triples). Allow single-URL lines too.
     import csv as _csv
     resources: List[Dict[str, Any]] = []
 
     with p.open("r", encoding="utf-8") as fh:
         reader = _csv.reader(fh)
         for row in reader:
-            # Accept either: (1) one URL per line OR (2) 3-field CSV (code,dataset,model)
             row = [part.strip() for part in row if part and part.strip()]
             code_url = dataset_url = model_url = None
 
@@ -441,73 +286,62 @@ def process_url_file(path_str: str) -> int:
                     code_url = url
             else:
                 parts = (row + ["", "", ""])[:3]
-                code_url, dataset_url, model_url = (parts[0] or None, parts[1] or None, parts[2] or None)
+                code_url, dataset_url, model_url = (
+                    parts[0] or None, parts[1] or None, parts[2] or None
+                )
 
-            # Build resource object
-            name = None
             chosen = model_url or dataset_url or code_url
-            if chosen:
-                if "huggingface.co" in chosen:
-                    name = chosen.split("huggingface.co/")[-1].rstrip("/")
-                elif "github.com" in chosen:
-                    name = "/".join(chosen.rstrip("/").split("/")[-2:])
-                else:
-                    name = chosen.rstrip("/").split("/")[-1]
+            if not chosen:
+                continue
 
-            resource = {
+            # derive a friendly name
+            if "huggingface.co" in chosen:
+                name = chosen.split("huggingface.co/")[-1].rstrip("/")
+            elif "github.com" in chosen:
+                name = "/".join(chosen.rstrip("/").split("/")[-2:])
+            else:
+                name = chosen.rstrip("/").split("/")[-1] or "unknown"
+
+            resources.append({
                 "code_url": code_url,
                 "dataset_url": dataset_url,
                 "model_url": model_url,
-                "category": classify_url(model_url or dataset_url or code_url) if chosen else "CODE",
+                "category": classify_url(model_url or dataset_url or code_url),
                 "name": name or "unknown",
                 "url": model_url or code_url or dataset_url,
-            }
-            resources.append(resource)
+            })
 
-    # Filter only lines that include a model URL and classify as MODEL
+    # only rows that actually have a model URL AND classify as MODEL
     models = [r for r in resources if r.get("model_url") and classify_url(r["model_url"]) == "MODEL"]
 
-    # For each model, try to find a repository to clone (github or hf->github)
+    # best-effort repo resolution for metrics that need a checkout
     for r in models:
         repo_to_clone = None
-    model_url = r.get("model_url", "") or ""
+        murl = r.get("model_url") or ""
+        if "github.com" in murl:
+            repo_to_clone = murl
+        elif "huggingface.co" in murl and find_github_url_from_hf:
+            try:
+                repo_to_clone = find_github_url_from_hf(r["name"])  # may be None
+            except Exception as e:
+                logger.debug("hf->github lookup failed for %s: %s", r["name"], e)
 
-    if "github.com" in model_url:
-        repo_to_clone = model_url
-    elif "huggingface.co" in model_url and find_github_url_from_hf:
-        try:
-            # Silence any progress bars / prints from HF utilities
-            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-                repo_to_clone = find_github_url_from_hf(r["name"])  # may return None
-        except Exception as e:
-            logger.debug("hf->github mapping failed for %s: %s", r["name"], e)
-            repo_to_clone = None
-
-    if repo_to_clone and clone_repo_to_temp:
-        try:
-            # Silence any VCS / progress output during clone
-            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+        if repo_to_clone and clone_repo_to_temp:
+            try:
                 local_dir = clone_repo_to_temp(repo_to_clone)
-            r["local_path"] = local_dir
-            r["local_dir"] = local_dir
-        except Exception as e:
-            logger.warning("Failed to clone %s -> %s: %s", repo_to_clone, r["url"], e)
+                r["local_path"] = local_dir
+            except Exception as e:
+                logger.warning("Clone failed for %s: %s", repo_to_clone, e)
+                r["local_path"] = None
+        else:
             r["local_path"] = None
-            r["local_dir"] = None
-    else:
-        r["local_path"] = None
-        r["local_dir"] = None
 
-
-    # Process sequentially to preserve input order and avoid stdout interleaving
+    # process sequentially; ALWAYS print one JSON object per model row
     for r in models:
         try:
-            # Silence any prints from metric functions so NDJSON stays clean
-            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-                result = compute_metrics_for_model(r)
-        except Exception:
-            logger.exception("Failed computing metrics for %s", r.get("url"))
-            # Minimal, valid fallback so the grader still gets one JSON line
+            result = compute_metrics_for_model(r)
+        except Exception as exc:
+            logger.exception("Failed computing metrics for %s: %s", r.get("url"), exc)
             result = {
                 "name": r.get("name", "unknown"),
                 "category": "MODEL",
@@ -516,19 +350,19 @@ def process_url_file(path_str: str) -> int:
                 "net_score_latency": 0
             }
 
-        # Always emit exactly one JSON object per model line
         sys.stdout.write(json.dumps(result, ensure_ascii=False, separators=(",", ":")) + "\n")
         sys.stdout.flush()
 
-        # cleanup any cloned local directories
-        local = r.get("local_path") or r.get("local_dir")
+        # cleanup
+        local = r.get("local_path")
         if local:
             try:
-                shutil.rmtree(local, onerror=remove_readonly)
+                shutil.rmtree(local, onerror=lambda f, path, ex: (os.chmod(path, stat.S_IWRITE), f(path)))
             except Exception:
                 logger.debug("Cleanup failed for %s", local)
 
     return 0
+
 
 
 # ----------------------------
