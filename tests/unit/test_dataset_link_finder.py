@@ -34,3 +34,4 @@ def test_dataset_quality_no_link_found(mocker):
 
     score, latency = metric({"name": "some/model"})
     assert score == 0.0
+    
