@@ -31,7 +31,7 @@ class StructureMetricRaw:
         # directly pull raw ModelInfo
         model_info = service.api.model_info(model_id)
         if model_info is None:
-            print(f"Could not fetch model info for '{model_id}'")
+           # print(f"Could not fetch model info for '{model_id}'")
             return None
         return StructureMetricRaw.calculate_structure_score(model_info)
 
@@ -41,4 +41,4 @@ if __name__ == "__main__":
 
     model_id = sys.argv[1] if len(sys.argv) > 1 else "bert-base-uncased"
     score = StructureMetricRaw.score_model(model_id)
-    print(f"Structure score for {model_id}: {score}")
+    # print(f"Structure score for {model_id}: {score}")
