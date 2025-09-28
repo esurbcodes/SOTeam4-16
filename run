@@ -15,7 +15,7 @@ Usage:
   ./run URL_FILE       -> processes newline-delimited URLs and prints NDJSON
 """
 from __future__ import annotations # Allows annotations (like return types) to be postponed and interpreted as strings
-
+from src.utils.logging import logger
 # ----------------------------
 # Standard library imports
 # ----------------------------
@@ -55,37 +55,6 @@ parts = [str(REPO_ROOT), str(SRC_DIR)]
 if _prev:
     parts.append(_prev)
 os.environ["PYTHONPATH"] = os.pathsep.join(parts)
-
-
-# ----------------------------
-# Logging setup (reads env)
-# ----------------------------
-
-LOG_FILE = os.environ.get("LOG_FILE")
-try:
-    LOG_LEVEL_ENV = int(os.environ.get("LOG_LEVEL", "0"))
-except ValueError:
-    LOG_LEVEL_ENV = 0
-
-log_level = {1: logging.INFO, 2: logging.DEBUG}.get(LOG_LEVEL_ENV)
-handlers = [logging.StreamHandler(sys.stderr)] # Default to stderr
-
-if LOG_LEVEL_ENV > 0 and log_level:
-    if LOG_FILE:
-        try:
-            # This will attempt to open the file, but will not crash on a bad path
-            handlers = [logging.FileHandler(LOG_FILE, mode="w", encoding="utf-8")]
-        except Exception:
-            # If the path is bad, we just stick with the stderr handler
-            pass
-
-    logging.basicConfig(
-        level=log_level,
-        handlers=handlers,
-        format="%(asctime)s %(levelname)s %(message)s"
-    )
-
-logger = logging.getLogger("phase1_cli")
 
 
 def remove_readonly(func, path, excinfo):
