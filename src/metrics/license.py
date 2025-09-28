@@ -31,7 +31,7 @@ _DEFAULT_ENDPOINT = os.environ.get(
     "PURDUE_GENAI_ENDPOINT", "https://genai.rcac.purdue.edu/api/chat/completions"
 )
 _DEFAULT_MODEL = os.environ.get("PURDUE_GENAI_MODEL", "llama3.1:latest")
-_API_KEY_ENV = "PURDUE_GENAI_API_KEY"
+_API_KEY_ENV = "GEN_AI_STUDIO_API_KEY"
 
 
 # -----------------------
