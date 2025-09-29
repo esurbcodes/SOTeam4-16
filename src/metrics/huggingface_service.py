@@ -1,62 +1,117 @@
-# huggingface_service.py (only showing updated main block at bottom)
-
-import re
-
-def extract_model_id(url: str) -> str | None:
-    """
-    Extracts the Hugging Face model or dataset ID from a URL.
-    Returns None if it's not a Hugging Face URL.
-    """
-    if "huggingface.co" not in url:
-        return None
-
-    # strip query params, anchors, /tree/main, etc.
-    clean_url = re.sub(r"(\?|#).*", "", url).strip()
-    clean_url = clean_url.replace("/tree/main", "").rstrip("/")
-
-    # get everything after huggingface.co/
-    try:
-        after_domain = clean_url.split("huggingface.co/")[1]
-    except IndexError:
-        return None
-
-    # skip "datasets/" prefix
-    if after_domain.startswith("datasets/"):
-        after_domain = after_domain.replace("datasets/", "", 1)
-
-    return after_domain if after_domain else None
+from huggingface_hub import HfApi, hf_api
+from datetime import datetime
+from typing import List, Optional
+from src.utils.logging import logger
 
 
+class ModelMetadata:
+    """Represents metadata for a Hugging Face model."""
+
+    def __init__(
+        self,
+        name: str,
+        category: str,
+        size: int,
+        license: str,
+        downloads: int,
+        likes: int,
+        last_modified: datetime,
+        files: List[str],
+    ):
+        self.modelName = name
+        self.modelCategory = category
+        self.modelSize = size
+        self.license = license
+        self.timesDownloaded = downloads
+        self.modelLikes = likes
+        self.lastModified = last_modified
+        self.files = files
+
+    def __repr__(self):
+        return (
+            f"<ModelMetadata name={self.modelName}, category={self.modelCategory}, "
+            f"size={self.modelSize}, downloads={self.timesDownloaded}, likes={self.modelLikes}>"
+        )
+
+    def pretty_size(self) -> str:
+        """Return human-readable file size (e.g. '420 MB')."""
+        size = self.modelSize
+        for unit in ["bytes", "KB", "MB", "GB", "TB"]:
+            if size < 1024:
+                return f"{size:.2f} {unit}"
+            size /= 1024
+        return f"{size:.2f} PB"
+
+
+class HuggingFaceService:
+    """Wrapper around the Hugging Face API to fetch model information."""
+
+    def __init__(self, token: Optional[str] = None):
+        try:
+            self.api = HfApi(token=token)
+            # You can optionally add a login check to validate the token immediately
+            if token:
+                self.api.whoami()
+        except Exception as e:
+            logger.error(f"Failed to initialize HuggingFaceService, possibly due to an invalid token: {e}")
+            # Set api to None so the service fails gracefully later
+            self.api = None
+
+    def fetch_model_metadata(self, model_id: str) -> Optional[ModelMetadata]:
+        """Fetch metadata for a given model ID from Hugging Face Hub.
+
+        Returns:
+            ModelMetadata if successful, None if model not found or API error.
+        """
+        try:
+            info = self.api.model_info(model_id)
+        except hf_api.HfHubHTTPError as e:
+            # print(f"❌ Error: Could not fetch model '{model_id}' — {e}")
+            return None
+        except Exception as e:
+            # print(f"❌ Unexpected error: {e}")
+            return None
+
+        model_name = info.modelId
+        category = info.pipeline_tag if info.pipeline_tag else "unknown"
+
+        # ✅ Use usedStorage instead of summing siblings
+        size = getattr(info, "usedStorage", 0) or 0
+
+        # License might be a property or in cardData
+        license_str = getattr(info, "license", None) or (
+            info.cardData.get("license") if hasattr(info, "cardData") and info.cardData else None
+        ) or "unspecified"
+
+        downloads = getattr(info, "downloads", 0) or 0
+        likes = getattr(info, "likes", 0) or 0
+        last_modified = getattr(info, "lastModified", datetime.min) or datetime.min
+        files = [s.rfilename for s in info.siblings]
+
+        return ModelMetadata(
+            name=model_name,
+            category=category,
+            size=size,
+            license=license_str,
+            downloads=downloads,
+            likes=likes,
+            last_modified=last_modified,
+            files=files,
+        )
+    def get_raw_model_info(self, model_id: str):
+        """Return the raw ModelInfo object from huggingface_hub (or None on failure)."""
+        try:
+            return self.api.model_info(model_id)
+        except Exception as e:
+            # print(f"Could not fetch raw model info for '{model_id}': {e}")
+            return None
+        
+
+
+# -------------------------
+# Temporary test block
+# -------------------------
 if __name__ == "__main__":
-    import sys
-
-    # pass text file path as argument, e.g.
-    # python huggingface_service.py urls.txt
-    file_path = sys.argv[1] if len(sys.argv) > 1 else "urls.txt"
-
     service = HuggingFaceService()
-
-    with open(file_path, "r", encoding="utf-8") as f:
-        for line in f:
-            url = line.strip()
-            if not url:
-                continue
-
-            model_id = extract_model_id(url)
-            if model_id is None:
-                print(f"Skipping non-HuggingFace URL: {url}")
-                continue
-
-            print(f"\nFetching metadata for: {model_id} (from {url})")
-            metadata = service.fetch_model_metadata(model_id)
-            if metadata:
-                print("  Name:", metadata.modelName)
-                print("  Category:", metadata.modelCategory)
-                print("  Size:", metadata.modelSize, "bytes")
-                print("  License:", metadata.license)
-                print("  Downloads:", metadata.timesDownloaded)
-                print("  Likes:", metadata.modelLikes)
-                print("  Last modified:", metadata.lastModified)
-                print("  Files:", len(metadata.files))
-            else:
-                print(f"  Failed to fetch metadata for {model_id}")
+    model_id = "tencent/SRPO"  # test with a known model
+    metadata = service.fetch_model_metadata(model_id)
