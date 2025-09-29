@@ -1,5 +1,0 @@
-pytest
-pytest-mock
-pytest-cov
-coverage
-requests-mock
