@@ -58,8 +58,8 @@ _LICENSE_KEYWORDS = {
     "mit": ("MIT", 1.0),
     "apache": ("Apache-2.0", 0.95),
     "bsd": ("BSD", 0.9),
+    "lgpl": ("LGPL", 0.6),   # moved above gpl
     "gpl": ("GPL", 0.4),
-    "lgpl": ("LGPL", 0.6),
     "mozilla": ("MPL", 0.8),
     "proprietary": ("Proprietary", 0.0),
 }
