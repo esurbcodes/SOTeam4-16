@@ -68,4 +68,3 @@ def metric(resource: Dict[str, Any]) -> Tuple[float, int]:
     
     latency_ms = int((time.perf_counter() - start_time) * 1000)
     return round(score, 2), latency_ms
-
