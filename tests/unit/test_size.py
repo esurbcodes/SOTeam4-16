@@ -140,3 +140,4 @@ class TestModelSizeScoring(unittest.TestCase):
         self.assertAlmostEqual(scores_6gb['desktop_pc'], 0.0, places=self.places)
         # Server (max=10.0): 1 - (6.0 / 10.0) = 0.4
         self.assertAlmostEqual(scores_6gb['aws_server'], 0.4, places=self.places)
+
