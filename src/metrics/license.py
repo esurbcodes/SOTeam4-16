@@ -1,230 +1,150 @@
-# src/metrics/license_score.py
+# src/metrics/license.py
 """
-License compatibility metric that uses Purdue GenAI Studio (LLM) as the primary
-analyzer and falls back to a local heuristic if the API is not available.
+Calculates a license compatibility score for a model's repository.
 
-Exports:
-    def metric(resource: Dict[str, Any]) -> Tuple[float, int]
+This metric first attempts to find and read a LICENSE file in the local repository.
+It calculates a score based on two methods:
+1.  Heuristic Fallback: A fast, local check for common permissive license keywords (MIT, Apache, etc.).
+2.  LLM-Powered Analysis: If a `GEN_AI_STUDIO_API_KEY` environment variable is set, it calls the
+    Gemini API with the license text, asking for a `compatibility_score` in a JSON format.
 
-Environment variables (optional):
-    - PURDUE_GENAI_API_KEY: API key (string) obtained from Purdue GenAI Studio UI
-    - PURDUE_GENAI_MODEL: model id to use (default "llama3.1:latest")
-    - PURDUE_GENAI_ENDPOINT: endpoint override (default "https://genai.rcac.purdue.edu/api/chat/completions")
-
-Notes:
-  - The metric prefers a LICENSE file in resource['local_dir'] (if present),
-    otherwise it will try resource['url'] + README (best-effort).
-  - Returns a float in [0,1] and the latency in integer milliseconds.
+The LLM-powered score is preferred. If the API call fails, is disabled, or returns an
+invalid format, the metric gracefully falls back to the heuristic score.
 """
 from __future__ import annotations
-
-import json
 import os
-import re
 import time
-from typing import Any, Dict, Optional, Tuple
+import logging
+import json
+import re
+import requests
+from typing import Any, Dict, Tuple
 
-import requests  # add to requirements.txt
+logger = logging.getLogger("phase1_cli")
 
-# Default Purdue GenAI Studio endpoint (OpenAI-compatible chat completions)
-_DEFAULT_ENDPOINT = os.environ.get(
-    "PURDUE_GENAI_ENDPOINT", "https://genai.rcac.purdue.edu/api/chat/completions"
-)
-_DEFAULT_MODEL = os.environ.get("PURDUE_GENAI_MODEL", "llama3.1:latest")
-_API_KEY_ENV = "GEN_AI_STUDIO_API_KEY"
+# --- Heuristic Scoring Logic ---
 
-
-# -----------------------
-# Helpers: file reading
-# -----------------------
-def _read_local_file(local_dir: str, names=("LICENSE", "LICENSE.txt", "LICENSE.md", "README.md")) -> Optional[str]:
-    if not local_dir:
-        return None
-    for name in names:
-        path = os.path.join(local_dir, name)
-        if os.path.isfile(path):
-            try:
-                with open(path, "r", encoding="utf-8", errors="replace") as fh:
-                    return fh.read()
-            except Exception:
-                continue
-    return None
-
-
-# -----------------------
-# Heuristic fallback
-# -----------------------
-_LICENSE_KEYWORDS = {
-    "mit": ("MIT", 1.0),
-    "apache": ("Apache-2.0", 0.95),
-    "bsd": ("BSD", 0.9),
-    "lgpl": ("LGPL", 0.6),   # moved above gpl
-    "gpl": ("GPL", 0.4),
-    "mozilla": ("MPL", 0.8),
-    "proprietary": ("Proprietary", 0.0),
+# A dictionary mapping license keywords to their compatibility scores and labels.
+LICENSE_KEYWORDS = {
+    "mit": (1.0, "MIT"),
+    "apache": (0.95, "Apache-2.0"),
+    "bsd": (0.9, "BSD"),
+    "mozilla": (0.75, "MPL"),
+    "mpl": (0.75, "MPL"),
+    "lgpl": (0.6, "LGPL"),
+    "creative commons": (0.5, "CC-BY"),
+    "cc-by": (0.5, "CC-BY"),
+    "gpl": (0.4, "GPL"),
 }
 
 def heuristic_license_score(text: str) -> Tuple[float, str, str]:
+    """
+    Performs a fast, heuristic-based scoring of license text by searching for keywords.
+    Returns a tuple of (score, label, method).
+    """
     if not text:
-        return 0.0, "NO_LICENSE_DETECTED", "missing"
-    low = text.lower()
-    for k, (label, score) in _LICENSE_KEYWORDS.items():
-        if k in low:
-            return float(score), label, "heuristic"
-    # fallback: if contains "copyright" or "all rights reserved" treat as restrictive
-    if "all rights reserved" in low or "copyright" in low:
-        return 0.0, "PROPRIETARY-LIKE", "heuristic"
-    # unknown
-    return 0.0, "UNKNOWN", "heuristic"
+        return 0.0, "Unknown", "Heuristic"
 
+    lower_text = text.lower()
+    for keyword, (score, label) in LICENSE_KEYWORDS.items():
+        if keyword in lower_text:
+            return score, label, "Heuristic"
+    
+    return 0.0, "Unknown", "Heuristic"
 
-# -----------------------
-# LLM call and parsing
-# -----------------------
-def _build_prompt_for_license(text: str) -> str:
+# --- Helper Functions ---
+
+def _read_license_file(local_dir: str) -> str | None:
     """
-    Returns a user prompt instructing the LLM to return a small JSON object.
-    The LLM should output parsable JSON (license_spdx, category, compatibility_score, explanation).
+    Searches for common license filenames in a directory and returns the content
+    of the first one found.
     """
-    # Keep prompt concise and ask for JSON only (to ease parsing)
-    return (
-        "You are a helpful assistant that classifies software licenses and assesses their "
-        "compatibility for reuse (including commercial use and modification). "
-        "Given the following license or README text, respond ONLY with a single valid JSON object "
-        "containing the fields: "
-        "license_spdx (string or 'UNKNOWN'), "
-        "category (one of 'permissive','weak-copyleft','strong-copyleft','proprietary','unknown'), "
-        "compatibility_score (number between 0.0 and 1.0), "
-        "compatibility_with_commercial_use (true/false), "
-        "explanation (short string). "
-        "Here is the text to analyze:\n\n"
-        f"{text}\n\n"
-        "Return only the JSON object and nothing else."
-    )
-
-
-def _call_purdue_genai(prompt: str, model: str = _DEFAULT_MODEL, endpoint: str = _DEFAULT_ENDPOINT,
-                       api_key: Optional[str] = None, timeout: int = 20) -> Dict[str, Any]:
-    """
-    Call Purdue GenAI Studio chat completions endpoint in an OpenAI-compatible way.
-    Returns the parsed JSON response body (the whole response) or raises Exception on failure.
-    Example endpoint and header usage documented by RCAC. :contentReference[oaicite:2]{index=2}
-    """
-    if not api_key:
-        raise RuntimeError("No Purdue GenAI API key provided")
-
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-
-    body = {
-        "model": model,
-        "messages": [
-            {"role": "user", "content": prompt}
-        ],
-        "stream": False,
-    }
-
-    resp = requests.post(endpoint, headers=headers, json=body, timeout=timeout)
-    if resp.status_code != 200:
-        raise RuntimeError(f"Purdue GenAI API error: {resp.status_code} {resp.text}")
-    # response is expected to be JSON
-    return resp.json()
-
-
-def _extract_json_from_assistant(content: str) -> Optional[Dict[str, Any]]:
-    """
-    Attempt to find a JSON object inside the assistant message. We try to be forgiving.
-    """
-    # First try to parse the whole content
-    content = content.strip()
-    # If content starts with ```json ... ``` remove fences
-    # remove triple backticks
-    content = re.sub(r"(^```json\s*|\s*```$)", "", content, flags=re.I).strip()
-    # Simple heuristic: find first { ... } block
-    m = re.search(r"(\{(?:.|\s)*\})", content)
-    if not m:
+    if not local_dir or not os.path.isdir(local_dir):
         return None
-    fragment = m.group(1)
+    
+    for filename in ["LICENSE", "LICENSE.md", "LICENSE.txt", "COPYING"]:
+        path = os.path.join(local_dir, filename)
+        if os.path.isfile(path):
+            try:
+                with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                    return f.read()
+            except Exception as e:
+                logger.debug(f"Could not read license file {path}: {e}")
+    return None
+
+def _extract_json_from_assistant(content: str) -> Dict[str, Any] | None:
+    """
+    Safely extracts a JSON object from a string, handling common LLM response formats
+    like markdown code fences and single quotes.
+    """
+    if not content:
+        return None
+    
+    # Find the JSON block, which might be inside a markdown fence
+    match = re.search(r"\{[\s\S]*\}", content)
+    if not match:
+        return None
+        
+    json_str = match.group(0)
     try:
-        return json.loads(fragment)
-    except Exception:
-        # try to fix common single-quote issues
+        # First attempt: parse directly
+        return json.loads(json_str)
+    except json.JSONDecodeError:
+        # Second attempt: handle single quotes
         try:
-            fixed = fragment.replace("'", '"')
-            return json.loads(fixed)
-        except Exception:
+            return json.loads(json_str.replace("'", '"'))
+        except json.JSONDecodeError:
+            logger.debug("Failed to parse JSON from LLM response after attempting to fix quotes.")
             return None
 
+# --- Main Metric Function ---
 
-# -----------------------
-# Public metric API
-# -----------------------
 def metric(resource: Dict[str, Any]) -> Tuple[float, int]:
     """
-    Compute license compatibility score for a given resource.
-    Input 'resource' keys used:
-      - 'local_dir' (optional): local path to repo snapshot
-      - 'url' (optional): original repo URL (used as fallback)
-    Output:
-      - (score_float_in_[0,1], latency_ms_int)
+    Calculates the license score, using an LLM if available, otherwise falling back
+    to a keyword-based heuristic.
     """
-    t0 = time.perf_counter()
-    # 1) Get license or README text (prefer LICENSE)
-    local_dir = resource.get("local_dir") or resource.get("local_path") or None
-    text = None
-    if local_dir:
-        text = _read_local_file(local_dir, names=("LICENSE", "LICENSE.txt", "LICENSE.md", "LICENSE.rst"))
-    # fallback to README if no license
-    if not text and local_dir:
-        text = _read_local_file(local_dir, names=("README.md", "README.rst", "README.txt", "README"))
-    # if still nothing, optionally we could attempt remote read (omitted here for determinism)
-    if not text:
-        # fallback to resource 'url' presence (we choose not to fetch network READMEs here)
-        # We will still attempt LLM only if API key is present and resource.url has some brief text
-        text = ""
+    start_time = time.perf_counter()
+    final_score = 0.0
 
-    # 2) Try LLM if API key is present (Purdue GenAI)
-    api_key = os.environ.get(_API_KEY_ENV)
-    if api_key and text is not None:
-        # build prompt and call LLM
-        prompt = _build_prompt_for_license(text if text else "No license text found.")
+    # Step 1: Read the license file from the local repository path
+    local_dir = resource.get("local_path") or resource.get("local_dir")
+    license_text = _read_license_file(local_dir)
+
+    # Step 2: Calculate the heuristic score as a reliable fallback
+    if license_text:
+        final_score, _, _ = heuristic_license_score(license_text)
+
+    # Step 3: Attempt to get a more accurate score from the Gemini LLM
+    api_key = os.environ.get("GEN_AI_STUDIO_API_KEY")
+    if api_key and license_text:
+        prompt = (
+            "Analyze the following license text and determine its compatibility for commercial reuse "
+            "in an open-source project. Respond ONLY with a single valid JSON object containing one key, "
+            f"'compatibility_score', with a float value between 0.0 (very restrictive) and 1.0 (very permissive).\n\n"
+            f"LICENSE TEXT:\n\"\"\"\n{license_text[:4000]}\n\"\"\""
+        )
+        
         try:
-            resp_json = _call_purdue_genai(prompt, model=os.environ.get("PURDUE_GENAI_MODEL", _DEFAULT_MODEL),
-                                           endpoint=os.environ.get("PURDUE_GENAI_ENDPOINT", _DEFAULT_ENDPOINT),
-                                           api_key=api_key, timeout=25)
-            # Parse assistant content. Response structure expected to follow chat completion
-            # Example: resp_json['choices'][0]['message']['content'] or resp_json['choices'][0]['text']
-            assistant_content = None
-            choices = resp_json.get("choices") or []
-            if choices:
-                first = choices[0]
-                # new-style chat message
-                if isinstance(first.get("message"), dict):
-                    assistant_content = first["message"].get("content")
-                else:
-                    assistant_content = first.get("text") or first.get("message")
-            if assistant_content:
-                parsed = _extract_json_from_assistant(assistant_content)
-                if parsed:
-                    # expected fields: compatibility_score (0.0-1.0), license_spdx, category, explanation
-                    score = parsed.get("compatibility_score")
-                    # normalize / validate
-                    if isinstance(score, (int, float)):
-                        scoref = float(score)
-                        if scoref < 0.0:
-                            scoref = 0.0
-                        if scoref > 1.0:
-                            scoref = 1.0
-                        latency_ms = int(round((time.perf_counter() - t0) * 1000.0))
-                        return scoref, latency_ms
-            # If parsing failed, fall through to heuristic
-        except Exception:
-            # LLM call failed -> fall back to heuristic
-            pass
+            response = requests.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={api_key}",
+                headers={"Content-Type": "application/json"},
+                json={"contents": [{"parts": [{"text": prompt}]}]},
+                timeout=15,
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                llm_text = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+                
+                if (parsed_json := _extract_json_from_assistant(llm_text)) and isinstance(score := parsed_json.get("compatibility_score"), (float, int)):
+                    final_score = float(max(0.0, min(1.0, score))) # Clamp score to [0,1]
+            else:
+                 logger.debug(f"LLM API returned status {response.status_code}, using heuristic score.")
 
-    # 3) Heuristic fallback (local deterministic)
-    heuristic_score, label, method = heuristic_license_score(text)
-    latency_ms = int(round((time.perf_counter() - t0) * 1000.0))
-    return float(heuristic_score), latency_ms
+        except (requests.RequestException, KeyError, IndexError, TypeError) as e:
+            logger.debug(f"LLM call for license metric failed, using heuristic score. Error: {e}")
+            # On any error, the 'final_score' remains the heuristic one.
+
+    latency_ms = int((time.perf_counter() - start_time) * 1000)
+    return round(final_score, 2), latency_ms
