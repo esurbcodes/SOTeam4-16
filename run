@@ -245,65 +245,58 @@ def load_metrics() -> Dict[str, Callable[[Dict[str, Any]], Tuple[float, int]]]:
 # ----------------------------
 def compute_metrics_for_model(resource: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Compute all metrics for a single model resource.
+    Compute all metrics for a single model resource, correctly handling size_score dict.
     Ensures 'category' is always a string per spec: MODEL | DATASET | CODE.
     """
-    metrics = load_metrics()
-
-    # --- Enforce category from classify_url (never numeric) ---
-    category = classify_url(resource.get("url"))
-    out: Dict[str, Any] = {
-        "name": resource.get("name", "unknown"),
-        "category": category,
-        "url": resource.get("url"),
-    }
-
-    results: Dict[str, Tuple[float, int]] = {}
-
-    for name, func in metrics.items():
-        # Skip category.py from overwriting the spec field
-        if name == "category":
+    metrics, results = load_metrics(), {}
+    with ThreadPoolExecutor() as executor:
+        future_to_metric = {executor.submit(func, resource): name for name, func in metrics.items()}
+        for future in as_completed(future_to_metric):
+            name = future_to_metric[future]
             try:
-                _, latency = func(resource)
-                out["category_latency"] = int(latency)
-            except Exception:
-                out["category_latency"] = 0
-            continue
+                # Store the raw result (could be tuple or dict tuple)
+                results[name] = future.result() 
+            except Exception as e:
+                logger.error(f"Metric '{name}' failed for '{resource['name']}': {e}")
+                # Provide default structure based on metric type
+                results[name] = ({key: 0.0 for key in ["raspberry_pi", "jetson_nano", "desktop_pc", "aws_server"]}, 0) if name == 'size' else (0.0, 0)
 
-        try:
-            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-                score, latency = func(resource)
-            score = float(max(0.0, min(1.0, float(score))))
-            latency = int(latency)
-        except Exception:
-            score, latency = 0.0, 0
-
-        results[name] = (score, latency)
-
-    # Flatten into JSON
-    for name, (score, latency) in results.items():
-        if name == "model_scorer":
-            out[name] = {
-                "raspberry_pi": score,
-                "jetson_nano": score,
-                "desktop_pc": score,
-                "aws_server": score,
-            }
-        else:
-            out[name] = score
-        out[f"{name}_latency"] = latency
-
-    # --- Net score ---
-    if results:
-        metric_scores = [s for s, _ in results.values()]
-        net_score = sum(metric_scores) / len(metric_scores)
-    else:
-        net_score = 0.0
-
-    net_latency = sum(lat for _, lat in results.values())
-
-    out["net_score"] = round(max(0.0, min(1.0, net_score)), 4)
-    out["net_score_latency"] = int(net_latency)
+    # Initialize output dictionary
+    out = {"name": resource.get("name"), "category": "MODEL", "url": resource.get("url")}
+    metric_scores, total_latency = [], 0
+    
+    # Process results, adding to 'out' dictionary
+    for name, result_tuple in results.items():
+        # Unpack carefully, expecting (score, latency)
+        score, latency = result_tuple if isinstance(result_tuple, tuple) and len(result_tuple) == 2 else (None, 0)
+        
+        total_latency += latency
+        latency_key = f"{name}_latency"
+        
+        if name == 'category': # Special case for category
+            # Score here is the category name string, but we ignore it for net score
+            # Latency is correctly unpacked above
+            out[latency_key] = latency
+            continue # Don't process category score further
+        
+        if name == 'size':
+            # Score *is* the dictionary here
+            score_dict = score if isinstance(score, dict) else {key: 0.0 for key in ["raspberry_pi", "jetson_nano", "desktop_pc", "aws_server"]}
+            out['size_score'] = score_dict # Assign the dictionary directly
+            out['size_score_latency'] = latency
+            out['size_latency'] = latency # Add both latency keys
+            if score_dict: # Calculate average for net_score
+                avg_score = sum(score_dict.values()) / len(score_dict) if len(score_dict) > 0 else 0.0
+                metric_scores.append(avg_score)
+        else: # Handle all other metrics (expected float score)
+            score_val = float(max(0.0, min(1.0, score or 0.0)))
+            out[name] = score_val
+            out[latency_key] = latency
+            metric_scores.append(score_val)
+            
+    # --- Net score calculation ---
+    out["net_score"] = round(sum(metric_scores) / len(metric_scores), 4) if metric_scores else 0.0
+    out["net_score_latency"] = int(total_latency)
 
     return out
 
