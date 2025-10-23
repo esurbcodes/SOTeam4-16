@@ -49,4 +49,4 @@ def test_heuristic_direct_function():
     score, label, method = heuristic_license_score("Apache License 2.0")
     assert score == 0.95
     assert label == "Apache-2.0"
-    assert method == "heuristic"
+    assert method == "Heuristic"
