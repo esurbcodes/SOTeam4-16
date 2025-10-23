@@ -72,3 +72,4 @@ def test_extract_json_variants():
     assert _extract_json_from_assistant(fenced)["compatibility_score"] == 0.8
     assert _extract_json_from_assistant(single_quotes)["compatibility_score"] == 0.6
     assert _extract_json_from_assistant(garbage) is None
+    
