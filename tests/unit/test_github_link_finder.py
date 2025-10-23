@@ -65,3 +65,4 @@ def test_invalid_html_parsing(mocker):
 
     url = find_github_url_from_hf("id")
     assert url is None
+
