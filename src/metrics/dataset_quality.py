@@ -64,6 +64,12 @@ def metric(resource: Dict[str, Any]) -> Tuple[float, int]:
     start_time = time.perf_counter()
     final_score = 0.0
     model_repo_id = resource.get("name")
+    
+    # ---------- ALWAYS-DEFINED STATE (fix NameError across all paths) ----------
+    all_found_refs: Set[str] = set()
+    readme_dataset_refs: Set[str] = set()
+    datasets_declared_via_tags: bool = False
+    metadata_checked_and_exists: bool = False
 
     # ---- NEW: unified token check + fast exit ----
     token = (
@@ -110,10 +116,10 @@ def metric(resource: Dict[str, Any]) -> Tuple[float, int]:
 
     # Step 2: Fallback to README parsing, add unique refs to found set
     # Run README parse regardless, to catch links not mentioned in tags
-    readme_dataset_refs: Set[str] = set()
+    
     try:
         dataset_refs_readme, _ = find_datasets_from_resource(resource)
-        readme_dataset_refs.update(dataset_refs_readme)
+        readme_dataset_refs.update(dataset_refs_readme or [])
         if readme_dataset_refs:
              # Add newly found refs from README to the main set
              new_refs_from_readme = readme_dataset_refs - all_found_refs # Find refs only in README
