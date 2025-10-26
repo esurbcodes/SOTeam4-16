@@ -60,92 +60,6 @@ def remove_readonly(func, path, excinfo):
     """Error handler for shutil.rmtree that removes read-only permissions."""
     os.chmod(path, stat.S_IWRITE)
     func(path)
-    
-# ---------------------------------------------------------------------
-# Helper: Attach a local directory for Hugging Face models
-# ---------------------------------------------------------------------
-from huggingface_hub import snapshot_download
-import tempfile, re
-from src.utils.hf_normalize import normalize_hf_id
-from urllib.parse import urlparse
-
-def _attach_local_dir_if_hf(resource: dict) -> dict:
-    """
-    If this resource is a Hugging Face model, download a temporary local
-    snapshot so file-based metrics (e.g., reproducibility, reviewedness)
-    can analyze its contents.
-    """
-    url = resource.get("url", "")
-    name = resource.get("name", "")
-
-    # Detect if this is a Hugging Face model
-    if "huggingface.co" in url or ("/" in name and not name.startswith("http")):
-        try:
-            repo_id = normalize_hf_id(name or url)
-            local_dir = tempfile.mkdtemp(prefix="hf_")
-
-            # Disable symlinks on Windows to avoid warnings
-            snapshot_download(
-                repo_id=repo_id,
-                local_dir=local_dir,
-                local_dir_use_symlinks=False,   # avoid Windows symlink warning
-                etag_timeout=5,
-
-                # ⬇️ ONLY fetch what our metrics need
-                allow_patterns=[
-                    "README", "README.*", "readme*", "LICENSE*", 
-                    "requirements*.txt", "environment.yml", "pyproject.toml", "setup.py",
-                    "examples/**", "*.ipynb", ".github/**",
-                    "CONTRIBUTING.*", "CODEOWNERS", "model_card*.*", "config.json"
-                ],
-
-                # (optional) extra safety—explicitly skip huge files
-                ignore_patterns=[
-                    "*.bin", "*.safetensors", "*.onnx", "*.h5", "*.tflite", "*.pt", "*.ckpt",
-                    "pytorch_model.*", "tf_model.*", "rust_model.*", "flax_model.*", "weight*"
-                ],
-            )
-
-
-            resource["local_dir"] = local_dir
-        except Exception:
-            # Fail gracefully if download fails or repo not found
-            pass
-
-    return resource
-    
-import concurrent.futures
-
-def run_with_timeout(func, arg, timeout=15, label=None):
-    """Run a callable with a hard timeout."""
-    shown = label or getattr(func, "__name__", "unknown")
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-        fut = ex.submit(func, arg)
-        try:
-            return fut.result(timeout=timeout)
-        except concurrent.futures.TimeoutError:
-            logger.warning(f" {shown} timed out after {timeout}s.")
-            return 0.0, 0
-
-def _normalize_github_repo_url(url: str) -> str | None:
-    """
-    Convert any GitHub URL (/tree/... or with fragments) to the cloneable repo root.
-    e.g. https://github.com/pytorch/fairseq/tree/master/examples/wav2vec -> https://github.com/pytorch/fairseq.git
-    Returns None if not a GitHub URL.
-    """
-    try:
-        if not url or "github.com" not in url:
-            return None
-        u = urlparse(url)
-        parts = [p for p in u.path.strip("/").split("/") if p]
-        if len(parts) >= 2:
-            owner, repo = parts[0], parts[1]
-            repo = re.sub(r"\.git$", "", repo)
-            return f"https://github.com/{owner}/{repo}.git"
-    except Exception:
-        pass
-    return None
-    
 
 # ----------------------------
 # Install / Test handlers
@@ -285,41 +199,22 @@ def load_metrics() -> Dict[str, Callable[[Dict[str, Any]], Tuple[float, int]]]:
 # Metric computation
 # ----------------------------
 def compute_metrics_for_model(resource: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Compute all metrics for a single model/resource with safe guards:
-      - Skips repo-dependent metrics if no GitHub repo is available.
-      - Applies a per-metric timeout (default 15s).
-      - Logs start/finish for each metric.
-      - Computes net_score only from numeric values.
-    """
-
     # Load all metric functions dynamically
     metrics = load_metrics()
-
     out: Dict[str, Any] = {
         "name": resource.get("name", "unknown"),
         "category": "MODEL",
     }
 
     results: Dict[str, Tuple[float, int]] = {}
-
-    # Run each metric function safely
+    # Run each metric function on the resource
     for name, func in metrics.items():
-        # Skip repo-dependent metrics if no GitHub repo was found
-        if resource.get("skip_repo_metrics") and name in {"bus_factor", "code_quality"}:
-            logger.info(f"Skipping {name} (no GitHub repo for {resource.get('name')})")
-            continue
-
-        logger.info(f"→ Running metric: {name} for {resource.get('name')}")
         try:
-            score, latency = run_with_timeout(func, resource, timeout=15, label=f"metric:{name}")
-            logger.info(f" Finished metric: {name} ({latency} ms)")
-            if isinstance(score, (int, float)):
-                score = float(max(0.0, min(1.0, score)))
+            score, latency = func(resource) # Each metric returns (score, latency)
+            score = float(max(0.0, min(1.0, score))) # Clamp score between 0 and 1
         except Exception as e:
             logger.exception("Metric %s failed on %s: %s", name, resource.get("url"), e)
             score, latency = 0.0, 0
-
         results[name] = (score, latency)
 
     # Flatten results into output dictionary
@@ -336,23 +231,13 @@ def compute_metrics_for_model(resource: Dict[str, Any]) -> Dict[str, Any]:
             out[name] = score
         out[f"{name}_latency"] = latency
 
-    # Compute net_score = average of numeric metrics only
-    numeric_scores = []
-    net_latency = 0
-    for (score, latency) in results.values():
-        try:
-            net_latency += int(latency or 0)
-        except Exception:
-            pass
-        if isinstance(score, (int, float)) and not isinstance(score, bool):
-            numeric_scores.append(float(score))
-
-    net_score = round((sum(numeric_scores) / len(numeric_scores)) if numeric_scores else 0.0, 4)
-    out["net_score"] = net_score
+    # Net score = average (placeholder until team defines weights), We also compute total latency
+    net_score = sum(val for val, _ in results.values()) / max(1, len(results))
+    net_latency = sum(lat for _, lat in results.values())
+    out["net_score"] = round(net_score, 4)
     out["net_score_latency"] = net_latency
 
     return out
-
 
 
 # ----------------------------
@@ -374,50 +259,29 @@ def process_url_file(path_str: str) -> int:
         return 0
     
     resources = [
-    {
-        "url": u,
-        "category": classify_url(u),
-        "name": (
-            "/".join(u.rstrip('/').split('/')[-2:])  # github: owner/repo
-            if "github.com" in u
-            else normalize_hf_id(u)                   # HF: normalize to owner/repo
-        ),
-    }
-    for u in urls
+        {
+            "url": u,
+            "category": classify_url(u),
+            "name": (
+                "/".join(u.rstrip('/').split('/')[-2:]) if "github.com" in u
+                else u.split('huggingface.co/')[-1].rstrip('/')
+            )
+        }
+        for u in urls
     ]
-
     models = [r for r in resources if r["category"] == "MODEL"]
 
     for r in models:
-        
-        # NEW: attach a local copy of Hugging Face model files if possible
-        r = _attach_local_dir_if_hf(r)
-        
         repo_to_clone = None
+        if "github.com" in r['url']:
+            repo_to_clone = r['url']
+        elif "huggingface.co" in r['url']:
+            repo_to_clone = find_github_url_from_hf(r['name'])
 
-        if "github.com" in r["url"]:
-            # Direct GitHub link in urls.txt → normalize to repo root
-            repo_to_clone = _normalize_github_repo_url(r["url"]) or None
-
-        elif "huggingface.co" in r["url"]:
-            # Try to extract a GitHub link from the HF model card/readme
-            gh = find_github_url_from_hf(r["name"])
-            if gh:
-                repo_to_clone = _normalize_github_repo_url(gh) or None
-                
-        # Skip repo-dependent metrics entirely if no GitHub link found
-        if not repo_to_clone:
-            # Remove GitHub-dependent metrics from processing to avoid hangs
-            r["skip_repo_metrics"] = True
-        else:
-            r["skip_repo_metrics"] = False
-
-
-        # Only clone if we have a real repo root (https://github.com/owner/repo.git)
         if repo_to_clone:
-            r["local_path"] = clone_repo_to_temp(repo_to_clone)
+            r['local_path'] = clone_repo_to_temp(repo_to_clone)
         else:
-            r["local_path"] = None
+            r['local_path'] = None
 
     with ThreadPoolExecutor(max_workers=min(8, os.cpu_count() or 1)) as exe:
         futures = {exe.submit(compute_metrics_for_model, r): r for r in models}

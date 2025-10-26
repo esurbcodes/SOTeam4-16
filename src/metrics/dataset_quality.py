@@ -5,7 +5,7 @@ for dataset declarations ('dataset:...') and falling back to README parsing.
 Applies a baseline score if datasets are declared via tags.
 """
 from __future__ import annotations
-import time, os, re
+import time
 import logging
 from typing import Any, Dict, Tuple, Set
 from urllib.parse import urlparse
@@ -14,7 +14,6 @@ from huggingface_hub import HfApi, dataset_info
 from huggingface_hub.utils import HfFolder, RepositoryNotFoundError, HFValidationError
 # Ensure this import is correct relative to your project structure
 from src.utils.dataset_link_finder import find_datasets_from_resource, _normalize_dataset_ref # Import helper
-from src.utils.hf_normalize import normalize_hf_id  # we'll use this for model ids
 
 logger = logging.getLogger("phase1_cli")
 
@@ -64,25 +63,20 @@ def metric(resource: Dict[str, Any]) -> Tuple[float, int]:
     start_time = time.perf_counter()
     final_score = 0.0
     model_repo_id = resource.get("name")
+    # Flag to track if the model *intended* to declare datasets via tags
+    datasets_declared_via_tags = False
+    all_found_refs: Set[str] = set() # Store all refs found (tags + readme)
+    metadata_checked_and_exists = False
 
-    # ---- NEW: unified token check + fast exit ----
-    token = (
-        HfFolder.get_token()
-        or os.getenv("HUGGINGFACEHUB_API_TOKEN")
-        or os.getenv("HF_TOKEN")
-    )
-    if not token:
-        # No auth → skip quickly, avoid repeated HTTP attempts
-        return 0.0, int((time.perf_counter() - start_time) * 1000)
+    token = HfFolder.get_token()
+    if not token: logger.warning("Hugging Face token not found by dataset quality metric.")
+    else: logger.debug("Dataset quality metric using detected Hugging Face token.")
 
     api = HfApi(token=token)
 
     # Step 1: Check model's metadata tags via API
     if model_repo_id:
         try:
-            # ---- NEW: normalize HF id (handles ".../tree/main") ----
-            model_repo_id = normalize_hf_id(model_repo_id)
-            
             model_meta = api.model_info(model_repo_id)
             metadata_checked_and_exists = True
 
@@ -126,29 +120,18 @@ def metric(resource: Dict[str, Any]) -> Tuple[float, int]:
     logger.debug(f"All potential dataset references combined for '{model_repo_id}': {all_found_refs}")
 
     # Step 3: Score the datasets that are in 'owner/name' format
-    SCORABLE_RE = re.compile(r"^[\w.-]+/[\w.-]+$")  # valid IDs: owner/name, allowing _, ., -
-
     if all_found_refs:
-        # Filter only clean IDs that look like "owner/name"
-        scorable_ids = {ref for ref in all_found_refs if ref and SCORABLE_RE.match(ref)}
+        # Filter for scorable IDs (must contain '/')
+        scorable_ids = {ref for ref in all_found_refs if ref and '/' in ref}
         if scorable_ids:
-            scores = [score_single_dataset(ds_id, token=token) for ds_id in scorable_ids]
-            if scores:
-                final_score = max(scores)
-                logger.debug(
-                    f"Highest score among scorable datasets for '{model_repo_id}' is {final_score:.2f}"
-                )
+             scores = [score_single_dataset(ds_id, token=token) for ds_id in scorable_ids]
+             if scores:
+                 final_score = max(scores)
+                 logger.debug(f"Highest score among scorable datasets for '{model_repo_id}' is {final_score:.2f}")
         else:
-            canonical_refs_found = {ref for ref in all_found_refs if ref and not SCORABLE_RE.match(ref)}
-            if canonical_refs_found:
-                logger.debug(
-                    f"Only canonical or invalid dataset names found for '{model_repo_id}': {canonical_refs_found}. Cannot score directly."
-                )
-            else:
-                logger.debug(
-                    f"No scorable dataset IDs (owner/name format) found among references for '{model_repo_id}'."
-                )
-
+            canonical_refs_found = {ref for ref in all_found_refs if ref and '/' not in ref}
+            if canonical_refs_found: logger.debug(f"Only canonical dataset names found for '{model_repo_id}': {canonical_refs_found}. Cannot score directly.")
+            else: logger.debug(f"No scorable dataset IDs (owner/name format) found among references for '{model_repo_id}'.")
 
 
     # Step 4: Apply baseline score logic based on TAGS
