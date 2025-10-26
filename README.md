@@ -78,3 +78,37 @@ The raw download count is converted into a normalized score between 0.0 and 1.0 
 If the model cannot be found on the Hub or if there is a network error, the metric gracefully fails and returns a score of 0.0.
 
 Return (score, latency_ms)
+
+# Reproducibility (New for Phase 2)
+
+Measures "how easily another developer can re-run the model and obtain the same results".
+
+Steps:
+	1. Start latency timer using `time.perf_counter()`.  
+	2. Check for reproducibility cues inside the cloned repo:
+	   - Environment specification files (`requirements.txt`, `environment.yml`, `setup.py`, `pyproject.toml`) → +0.4  
+	   - Random seed usage (`random.seed`, `torch.manual_seed`, `numpy.random.seed`) → +0.2  
+	   - Runnable artifacts like Jupyter notebooks (`.ipynb`) or an `examples/` folder → +0.2  
+	   - README mentions “reproduce”, “train”, “run experiment” → +0.2  
+	3. Sum weights (max = 1.0) and round to 4 decimals.  
+
+Purpose:
+	Encourages well-documented, repeatable workflows and open-science practices.  
+	Repositories that clearly describe how to recreate results earn higher trust scores.
+
+# Reviewedness (New for Phase 2)
+
+Measures "how much peer review and collaboration" the repository has undergone.
+
+Steps:
+	1. Start latency timer using `time.perf_counter()`.  
+	2. Inspect local git metadata for social signals:
+	   - Multiple contributors (`git shortlog -s`) → +0.4  
+	   - Merge commits (`git log --merges`) → +0.3  
+	   - Issue/discussion templates under `.github/ISSUE_TEMPLATE` → +0.2  
+	   - Optional: presence of `CONTRIBUTING.md` or `CODEOWNERS` → +0.1  
+	3. Cap score at 1.0 and return `(score, latency_ms)`.
+
+Purpose:
+	Quantifies the level of community involvement and review—key indicators of software reliability and maintainability.  
+	High reviewedness implies the project has been seen and improved by multiple developers, reducing single-person risk.
