@@ -1,0 +1,8 @@
+requests>=2.0.0
+huggingface_hub
+beautifulsoup4
+gitpython
+pytest
+coverage
+pytest-mock
+requests-mock
