@@ -1,0 +1,62 @@
+name: CD - Deploy to AWS Lambda
+
+on:
+  push:
+    branches: [ main ]   # deploy only after merges to main
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Build & Deploy Lambda
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python (match Lambda runtime)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'   # Lambda supports 3.12; avoid 3.13
+
+      - name: Build Lambda package
+        run: |
+          set -e
+          rm -rf build package && mkdir -p package build
+          python -m pip install --upgrade pip
+          # Install only what's needed on Lambda into /package
+          pip install -r requirements.txt -t package
+          # Add your source
+          cp -r src package/src
+          # If you need the CLI 'run' module on Lambda, include it; otherwise skip:
+          # cp -r run package/run
+          # Zip from inside package so top-level modules import cleanly
+          (cd package && zip -r ../build/build.zip .)
+          echo "Built artifact at build/build.zip"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Deploy code to Lambda
+        run: |
+          set -e
+          aws lambda update-function-code \
+            --function-name "${{ secrets.LAMBDA_FUNCTION_NAME }}" \
+            --zip-file fileb://build/build.zip \
+            --publish
+          echo "Update initiated."
+
+      - name: Verify function exists and print last update status
+        run: |
+            echo "Verifying Lambda function..."
+            aws lambda get-function \
+              --function-name "${{ secrets.LAMBDA_FUNCTION_NAME }}" \
+              --query 'Configuration.[LastModified,Version,LastUpdateStatus,Runtime,Handler]'
+            echo "Lambda function verified."
+
