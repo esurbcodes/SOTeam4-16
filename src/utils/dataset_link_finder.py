@@ -13,7 +13,7 @@ from typing import List, Tuple, Optional, Dict, Set
 from html.parser import HTMLParser
 from urllib.parse import urlparse
 from huggingface_hub import hf_hub_download, model_info
-from huggingface_hub.error import RepositoryNotFoundError
+from huggingface_hub.utils import RepositoryNotFoundError
 
 logger = logging.getLogger("phase1_cli")
 
