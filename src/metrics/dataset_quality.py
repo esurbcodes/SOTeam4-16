@@ -10,7 +10,7 @@ import logging
 from typing import Any, Dict, Tuple, Set
 from urllib.parse import urlparse
 # Import HfApi for consistency and access to model_info
-from huggingface_hub import HfApi, dataset_info
+from huggingface_hub import HfApi, dataset_info, get_token
 from huggingface_hub.utils import RepositoryNotFoundError, HFValidationError
 # Ensure this import is correct relative to your project structure
 from src.utils.dataset_link_finder import find_datasets_from_resource, _normalize_dataset_ref # Import helper
@@ -68,7 +68,7 @@ def metric(resource: Dict[str, Any]) -> Tuple[float, int]:
     all_found_refs: Set[str] = set() # Store all refs found (tags + readme)
     metadata_checked_and_exists = False
 
-    token = HfFolder.get_token()
+    token = get_token()
     if not token: logger.warning("Hugging Face token not found by dataset quality metric.")
     else: logger.debug("Dataset quality metric using detected Hugging Face token.")
 
