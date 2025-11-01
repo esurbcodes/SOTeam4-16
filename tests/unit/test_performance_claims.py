@@ -2,7 +2,7 @@
 
 from src.metrics.performance_claims import metric
 import pytest
-
+from huggingface_hub.utils import HfHubHTTPError
 
 class FakeModelInfo:
     def __init__(self, downloads):
