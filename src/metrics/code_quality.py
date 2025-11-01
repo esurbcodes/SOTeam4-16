@@ -16,7 +16,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 from typing import Any, Dict, Tuple, List
-from huggingface_hub import list_repo_files, HfApi
+from huggingface_hub.utils import list_repo_files, HfApi
 
 def get_remote_repo_files(repo_id: str) -> List[str]:
     """Fetches the list of files in a remote Hugging Face repository."""
