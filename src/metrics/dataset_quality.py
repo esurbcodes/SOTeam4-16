@@ -5,7 +5,7 @@ for dataset declarations ('dataset:...') and falling back to README parsing.
 Applies a baseline score if datasets are declared via tags.
 """
 from __future__ import annotations
-import time
+import time, os, re
 import logging
 from typing import Any, Dict, Tuple, Set
 from urllib.parse import urlparse
@@ -14,6 +14,7 @@ from huggingface_hub import HfApi, dataset_info, get_token
 from huggingface_hub.utils import RepositoryNotFoundError, HFValidationError
 # Ensure this import is correct relative to your project structure
 from src.utils.dataset_link_finder import find_datasets_from_resource, _normalize_dataset_ref # Import helper
+from src.utils.hf_normalize import normalize_hf_id  # we'll use this for model ids
 
 logger = logging.getLogger("phase1_cli")
 
@@ -77,6 +78,9 @@ def metric(resource: Dict[str, Any]) -> Tuple[float, int]:
     # Step 1: Check model's metadata tags via API
     if model_repo_id:
         try:
+            # ---- NEW: normalize HF id (handles ".../tree/main") ----
+            model_repo_id = normalize_hf_id(model_repo_id)
+            
             model_meta = api.model_info(model_repo_id)
             metadata_checked_and_exists = True
 
@@ -104,10 +108,10 @@ def metric(resource: Dict[str, Any]) -> Tuple[float, int]:
 
     # Step 2: Fallback to README parsing, add unique refs to found set
     # Run README parse regardless, to catch links not mentioned in tags
-    readme_dataset_refs: Set[str] = set()
+    
     try:
         dataset_refs_readme, _ = find_datasets_from_resource(resource)
-        readme_dataset_refs.update(dataset_refs_readme)
+        readme_dataset_refs.update(dataset_refs_readme or [])
         if readme_dataset_refs:
              # Add newly found refs from README to the main set
              new_refs_from_readme = readme_dataset_refs - all_found_refs # Find refs only in README
@@ -120,18 +124,29 @@ def metric(resource: Dict[str, Any]) -> Tuple[float, int]:
     logger.debug(f"All potential dataset references combined for '{model_repo_id}': {all_found_refs}")
 
     # Step 3: Score the datasets that are in 'owner/name' format
+    SCORABLE_RE = re.compile(r"^[\w.-]+/[\w.-]+$")  # valid IDs: owner/name, allowing _, ., -
+
     if all_found_refs:
-        # Filter for scorable IDs (must contain '/')
-        scorable_ids = {ref for ref in all_found_refs if ref and '/' in ref}
+        # Filter only clean IDs that look like "owner/name"
+        scorable_ids = {ref for ref in all_found_refs if ref and SCORABLE_RE.match(ref)}
         if scorable_ids:
-             scores = [score_single_dataset(ds_id, token=token) for ds_id in scorable_ids]
-             if scores:
-                 final_score = max(scores)
-                 logger.debug(f"Highest score among scorable datasets for '{model_repo_id}' is {final_score:.2f}")
+            scores = [score_single_dataset(ds_id, token=token) for ds_id in scorable_ids]
+            if scores:
+                final_score = max(scores)
+                logger.debug(
+                    f"Highest score among scorable datasets for '{model_repo_id}' is {final_score:.2f}"
+                )
         else:
-            canonical_refs_found = {ref for ref in all_found_refs if ref and '/' not in ref}
-            if canonical_refs_found: logger.debug(f"Only canonical dataset names found for '{model_repo_id}': {canonical_refs_found}. Cannot score directly.")
-            else: logger.debug(f"No scorable dataset IDs (owner/name format) found among references for '{model_repo_id}'.")
+            canonical_refs_found = {ref for ref in all_found_refs if ref and not SCORABLE_RE.match(ref)}
+            if canonical_refs_found:
+                logger.debug(
+                    f"Only canonical or invalid dataset names found for '{model_repo_id}': {canonical_refs_found}. Cannot score directly."
+                )
+            else:
+                logger.debug(
+                    f"No scorable dataset IDs (owner/name format) found among references for '{model_repo_id}'."
+                )
+
 
 
     # Step 4: Apply baseline score logic based on TAGS
