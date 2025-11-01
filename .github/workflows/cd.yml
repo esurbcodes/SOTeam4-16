@@ -59,4 +59,7 @@ jobs:
               --function-name "${{ secrets.LAMBDA_FUNCTION_NAME }}" \
               --query 'Configuration.[LastModified,Version,LastUpdateStatus,Runtime,Handler]'
             echo "Lambda function verified."
+<<<<<<< HEAD
 
+=======
+>>>>>>> cb6e51abbb43fa1c371d4cec121860d2baf768c3
