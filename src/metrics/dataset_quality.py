@@ -11,7 +11,7 @@ from typing import Any, Dict, Tuple, Set
 from urllib.parse import urlparse
 # Import HfApi for consistency and access to model_info
 from huggingface_hub import HfApi, dataset_info
-from huggingface_hub import RepositoryNotFoundError, HFValidationError
+from huggingface_hub.error import RepositoryNotFoundError, HFValidationError
 # Ensure this import is correct relative to your project structure
 from src.utils.dataset_link_finder import find_datasets_from_resource, _normalize_dataset_ref # Import helper
 
