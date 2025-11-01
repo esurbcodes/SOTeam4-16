@@ -10,7 +10,7 @@ import logging
 from typing import Any, Dict, Tuple, Set
 from urllib.parse import urlparse
 # Import HfApi for consistency and access to model_info
-from huggingface_hub import HfApi, dataset_info
+from huggingface_hub import HfApi, dataset_info, get_token
 from huggingface_hub.utils import RepositoryNotFoundError, HFValidationError
 # Ensure this import is correct relative to your project structure
 from src.utils.dataset_link_finder import find_datasets_from_resource, _normalize_dataset_ref # Import helper
@@ -64,22 +64,14 @@ def metric(resource: Dict[str, Any]) -> Tuple[float, int]:
     start_time = time.perf_counter()
     final_score = 0.0
     model_repo_id = resource.get("name")
-    
-    # ---------- ALWAYS-DEFINED STATE (fix NameError across all paths) ----------
-    all_found_refs: Set[str] = set()
-    readme_dataset_refs: Set[str] = set()
-    datasets_declared_via_tags: bool = False
-    metadata_checked_and_exists: bool = False
+    # Flag to track if the model *intended* to declare datasets via tags
+    datasets_declared_via_tags = False
+    all_found_refs: Set[str] = set() # Store all refs found (tags + readme)
+    metadata_checked_and_exists = False
 
-    # ---- NEW: unified token check + fast exit ----
-    token = (
-        HfFolder.get_token()
-        or os.getenv("HUGGINGFACEHUB_API_TOKEN")
-        or os.getenv("HF_TOKEN")
-    )
-    if not token:
-        # No auth → skip quickly, avoid repeated HTTP attempts
-        return 0.0, int((time.perf_counter() - start_time) * 1000)
+    token = get_token()
+    if not token: logger.warning("Hugging Face token not found by dataset quality metric.")
+    else: logger.debug("Dataset quality metric using detected Hugging Face token.")
 
     api = HfApi(token=token)
 
