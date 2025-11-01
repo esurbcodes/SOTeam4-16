@@ -1,6 +1,8 @@
 from __future__ import annotations
 from huggingface_hub.utils import HfHubHTTPError
 
+HfHubHTTPError = HfHubHTTPError
+
 # Imports from standard Python libraries
 import time
 import logging
