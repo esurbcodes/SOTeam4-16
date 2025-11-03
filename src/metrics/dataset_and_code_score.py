@@ -10,7 +10,7 @@ logger = logging.getLogger("phase1_cli")
 
 # ---------------------------------------------------------------------
 # Backward compatibility shim for old tests
-def find_dataset_url_from_hf(model_name: str) -> str | None:
+def find_dataset_url_from_hf(model_name: str) -> Optional[str]:
     """
     Old compatibility function for tests.
     Uses new find_datasets_from_resource internally.
