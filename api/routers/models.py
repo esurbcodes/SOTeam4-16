@@ -2,10 +2,10 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 
-from schemas.models import ModelCreate, ModelUpdate, ModelOut, Page
-from services.registry import RegistryService
-from services.ingest import IngestService
-from services.scoring import ScoringService
+from ...schemas.models import ModelCreate, ModelUpdate, ModelOut, Page
+from ...services.registry import RegistryService
+from ...services.ingest import IngestService
+from ...services.scoring import ScoringService
 
 import time
 
