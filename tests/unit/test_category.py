@@ -1,5 +1,4 @@
 from src.metrics.category import metric
-from huggingface_hub import HfFolder
 
 # A fake class to simulate the model_info object from the real API
 class FakeModelInfo:

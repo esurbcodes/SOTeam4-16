@@ -12,8 +12,8 @@ import yaml
 from typing import List, Tuple, Optional, Dict, Set
 from html.parser import HTMLParser
 from urllib.parse import urlparse
-from huggingface_hub import hf_hub_download, model_info
-from huggingface_hub import HfFolder, RepositoryNotFoundError
+from huggingface_hub import hf_hub_download, model_info, get_token
+from huggingface_hub.utils import RepositoryNotFoundError
 
 logger = logging.getLogger("phase1_cli")
 
@@ -113,7 +113,7 @@ def find_datasets_from_resource(resource: Dict) -> Tuple[List[str], int]:
     start_time = time.perf_counter()
     repo_id = resource.get("name")
     local_dir = resource.get("local_dir")
-    token = HfFolder.get_token()
+    token = get_token()
 
     found_refs: Set[str] = set()
 

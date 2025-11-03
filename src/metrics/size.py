@@ -10,7 +10,7 @@ import logging
 from typing import Any, Dict, Tuple
 # Import HfApi client
 from huggingface_hub import HfApi
-from huggingface_hub.utils import HfFolder, RepositoryNotFoundError
+from huggingface_hub.utils import get_token, RepositoryNotFoundError
 
 logger = logging.getLogger("phase1_cli")
 
@@ -50,7 +50,7 @@ def metric(resource: Dict[str, Any]) -> Tuple[Dict[str, float], int]:
         return scores, latency_ms
 
     try:
-        token = HfFolder.get_token()
+        token = get_token()
         if not token:
             logger.warning("Hugging Face token not found by size metric. API calls may fail or be rate-limited.")
         else:

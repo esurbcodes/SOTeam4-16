@@ -1,4 +1,8 @@
 from __future__ import annotations
+from huggingface_hub.utils import HfHubHTTPError
+
+HfHubHTTPError = HfHubHTTPError
+
 # Imports from standard Python libraries
 import time
 import logging
@@ -6,7 +10,6 @@ from typing import Any, Dict, Tuple
 
 # Import the specific functions we need from the huggingface_hub library
 from huggingface_hub import model_info
-from huggingface_hub.utils import HfHubHTTPError
 
 # This gets the same logger instance used by run.py, so all logs go to the same place.
 logger = logging.getLogger("phase1_cli")
