@@ -1,7 +1,7 @@
 name: CD - Deploy API to Lambda
 on:
   push:
-    branches: [ dev_sam ]   # change to main when ready
+    branches: [ main ]   # change to main when ready
 
 permissions:
   id-token: write
