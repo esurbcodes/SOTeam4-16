@@ -17,40 +17,34 @@ HUGGINGFACE_API_BASE = "https://huggingface.co"
 # ---- Helpers for HuggingFace repo file access ----
 def _download_config_json_via_hf(repo_id: str) -> Dict[str, Any] | None:
     """
-    Attempt to retrieve config.json for a HF model.
-    First try using huggingface_hub.HfApi / hf_hub_download if available;
-    fall back to direct HTTP to the `resolve/main/config.json` endpoint.
+    Attempt to retrieve config.json for a HF model with authentication support.
     """
+    import os, requests
+    from dotenv import load_dotenv
+    load_dotenv()
+    HF_TOKEN = os.getenv("HUGGINGFACE_HUB_TOKEN")
+    GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+
+    headers = {}
+    if GITHUB_TOKEN:
+        headers["Authorization"] = f"token {GITHUB_TOKEN}"
+
     try:
-        # Lazy import to avoid import-time side-effects
         from huggingface_hub import hf_hub_download, HfApi
+        api = HfApi(token=HF_TOKEN)
         try:
-            # If config exists, this returns a local file path
-            path = hf_hub_download(repo_id=repo_id, filename="config.json")
+            path = hf_hub_download(repo_id=repo_id, filename="config.json", token=HF_TOKEN)
             with open(path, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
-            # fallback to using HfApi file list and then raw fetch
-            api = HfApi()
             files = api.list_repo_files(repo_id)
             if "config.json" in files:
-                # construct raw resolve URL
                 url = f"{HUGGINGFACE_API_BASE}/{repo_id}/resolve/main/config.json"
-                import requests
-                r = requests.get(url, timeout=6.0)
+                r = requests.get(url, headers=headers, timeout=6.0)
                 if r.status_code == 200:
                     return r.json()
-            return None
-    except Exception:
-        # huggingface_hub not available or failed; try direct HTTP request
-        try:
-            import requests
-            url = f"{HUGGINGFACE_API_BASE}/{repo_id}/resolve/main/config.json"
-            r = requests.get(url, timeout=6.0)
-            if r.status_code == 200:
-                return r.json()
-        except Exception as e:
-            logger.debug("treescore: direct HTTP fetch failed for %s: %s", repo_id, e)
+    except Exception as e:
+        logger.debug("treescore: fallback fetch failed for %s: %s", repo_id, e)
     return None
 
 def _parents_from_config(cfg: Dict[str, Any]) -> List[str]:
@@ -214,7 +208,7 @@ def metric(resource: Dict[str, Any]) -> Tuple[float, int]:
     except Exception as e:
         logger.exception("treescore: unexpected error for %s: %s", name, e)
         score = 0.0
-    latency = int((time.perf_counter() - start) * 1000)
+    latency_ms = int((time.perf_counter() - start) * 1000)
     # clamp
     score = float(max(0.0, min(1.0, score)))
-    return score, latency
+    return score, latency_ms
