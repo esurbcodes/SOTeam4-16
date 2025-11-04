@@ -1,65 +1,51 @@
-name: CD - Deploy to AWS Lambda
-
+name: CD - Deploy API to Lambda
 on:
   push:
-    branches: [ main ]   # deploy only after merges to main
+    branches: [ dev_sam ]   # change to main when ready
 
 permissions:
+  id-token: write
   contents: read
 
 jobs:
   deploy:
-    name: Build & Deploy Lambda
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python (match Lambda runtime)
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'   # Lambda supports 3.12; avoid 3.13
+          python-version: '3.11'
 
-      - name: Build Lambda package
+      - name: Build Lambda zip (code + deps)
         run: |
-          set -e
-          rm -rf build package && mkdir -p package build
           python -m pip install --upgrade pip
-          # Install only what's needed on Lambda into /package
-          pip install -r requirements.txt -t package
-          # Add your source
-          cp -r src package/src
-          # If you need the CLI 'run' module on Lambda, include it; otherwise skip:
-          # cp -r run package/run
-          # Zip from inside package so top-level modules import cleanly
-          (cd package && zip -r ../build/build.zip .)
-          echo "Built artifact at build/build.zip"
+          rm -rf package app.zip
+          python -m pip install -r requirements.txt -t package
+          cp -R api package/api
+          cp -R repositories schemas services package/
+          [ -f index.html ] && cp index.html package/ || true
+          find package -name "__pycache__" -type d -exec rm -rf {} +
+          cd package && zip -r ../app.zip .
 
-      - name: Configure AWS credentials
+      - name: Configure AWS (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
 
-      - name: Deploy code to Lambda
+      - name: Update Lambda code
         run: |
-          set -e
           aws lambda update-function-code \
             --function-name "${{ secrets.LAMBDA_FUNCTION_NAME }}" \
-            --zip-file fileb://build/build.zip \
+            --zip-file "fileb://app.zip" \
             --publish
-          echo "Update initiated."
 
-      - name: Verify function exists and print last update status
+      - name: Ensure runtime/handler (first time or when changed)
         run: |
-            echo "Verifying Lambda function..."
-            aws lambda get-function \
-              --function-name "${{ secrets.LAMBDA_FUNCTION_NAME }}" \
-              --query 'Configuration.[LastModified,Version,LastUpdateStatus,Runtime,Handler]'
-            echo "Lambda function verified."
-<<<<<<< HEAD
-
-=======
->>>>>>> cb6e51abbb43fa1c371d4cec121860d2baf768c3
+          aws lambda update-function-configuration \
+            --function-name "${{ secrets.LAMBDA_FUNCTION_NAME }}" \
+            --runtime python3.11 \
+            --handler api.main.handler \
+            --timeout 30 \
+            --memory-size 1024
