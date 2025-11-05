@@ -7,6 +7,10 @@ load_dotenv()
 print("[DEBUG] HF token loaded:", bool(os.getenv("HUGGINGFACE_HUB_TOKEN")))
 print("[DEBUG] GitHub token loaded:", bool(os.getenv("GITHUB_TOKEN")))
 
+# Non-latency metrics used by the ingest gate (spec requires each >= 0.5)
+NON_LATENCY = ("reviewedness", "dataset_quality", "dataset_and_code_score", "treescore")
+
+
 # Import your existing metrics/utilities
 from src.metrics import (
     ramp_up_time,
