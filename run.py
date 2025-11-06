@@ -89,14 +89,15 @@ def _attach_local_dir_if_hf(resource: dict) -> dict:
                 repo_id=repo_id,
                 local_dir=local_dir,
                 local_dir_use_symlinks=False,   # avoid Windows symlink warning
-                etag_timeout=5,
+                etag_timeout=15,
 
                 # ⬇️ ONLY fetch what our metrics need
                 allow_patterns=[
-                    "README", "README.*", "readme*", "LICENSE*", 
-                    "requirements*.txt", "environment.yml", "pyproject.toml", "setup.py",
-                    "examples/**", "*.ipynb", ".github/**",
-                    "CONTRIBUTING.*", "CODEOWNERS", "model_card*.*", "config.json"
+                "README", "README.*", "readme*", "LICENSE*", 
+                "requirements*.txt", "environment.yml", "pyproject.toml", "setup.py",
+                "examples/**", "*.ipynb",
+                ".github/**", ".github/**/*",  # ✅ include nested files
+                "CONTRIBUTING.*", "CODEOWNERS", "model_card*.*", "config.json"
                 ],
 
                 # (optional) extra safety—explicitly skip huge files
@@ -116,7 +117,7 @@ def _attach_local_dir_if_hf(resource: dict) -> dict:
     
 import concurrent.futures
 
-def run_with_timeout(func, arg, timeout=15, label=None):
+def run_with_timeout(func, arg, timeout=45, label=None):
     """Run a callable with a hard timeout."""
     shown = label or getattr(func, "__name__", "unknown")
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
@@ -312,7 +313,7 @@ def compute_metrics_for_model(resource: Dict[str, Any]) -> Dict[str, Any]:
 
         logger.info(f"→ Running metric: {name} for {resource.get('name')}")
         try:
-            score, latency = run_with_timeout(func, resource, timeout=15, label=f"metric:{name}")
+            score, latency = run_with_timeout(func, resource, timeout=90, label=f"metric:{name}")
             logger.info(f" Finished metric: {name} ({latency} ms)")
             if isinstance(score, (int, float)):
                 score = float(max(0.0, min(1.0, score)))
@@ -391,7 +392,7 @@ def process_url_file(path_str: str) -> int:
     for r in models:
         
         # NEW: attach a local copy of Hugging Face model files if possible
-        r = _attach_local_dir_if_hf(r)
+        #r = _attach_local_dir_if_hf(r)
         
         repo_to_clone = None
 
