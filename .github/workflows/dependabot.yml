@@ -1,0 +1,16 @@
+version: 2
+updates:
+  # --- Python dependencies (requirements.txt) ---
+  - package-ecosystem: "pip"
+    directory: "/"                   # Path to requirements.txt
+    schedule:
+      interval: "daily"              # Options: daily, weekly, monthly
+    open-pull-requests-limit: 5
+    versioning-strategy: "increase"
+
+  # --- GitHub Actions dependencies ---
+  - package-ecosystem: "github-actions"
+    directory: "/"                   # Root directory (where workflows live)
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 5

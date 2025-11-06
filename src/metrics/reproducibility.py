@@ -15,91 +15,97 @@
 #   Uses the cloned local repository path provided in resource["local_dir"].
 #   (Tests mock this path so the function can run offline.)
 
+# src/metrics/reproducibility.py
 from __future__ import annotations
-import os, re, time
-from typing import Any, Dict, Tuple
+import os, time
+from pathlib import Path
+from typing import Dict, Any, Tuple
+from dotenv import load_dotenv
+import requests
+
+load_dotenv()
+HF_TOKEN = os.getenv("HUGGINGFACE_HUB_TOKEN")
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+
+
+def _score_local_reproducibility(local_dir: str) -> float:
+    """
+    Inspect local repository files to infer reproducibility signals.
+    Weights:
+      requirements.txt   → +0.4
+      environment.yml    → +0.2
+      .ipynb notebook    → +0.2
+      README with 'reproduce' → +0.2
+    """
+    score = 0.0
+    try:
+        p = Path(local_dir)
+        if not p.exists():
+            return 0.0
+
+        # requirements.txt
+        if any(f.name.lower().startswith("requirements") for f in p.iterdir()):
+            score += 0.4
+
+        # environment.yml
+        if any(f.name.lower().startswith("environment") and f.suffix in (".yml", ".yaml") for f in p.iterdir()):
+            score += 0.2
+
+        # Jupyter notebooks
+        if any(f.suffix.lower() == ".ipynb" for f in p.iterdir()):
+            score += 0.2
+
+        # README mentions "reproduce"
+        for readme in p.glob("README*"):
+            try:
+                text = readme.read_text(encoding="utf-8", errors="ignore").lower()
+                if "reproduce" in text:
+                    score += 0.2
+                    break
+            except Exception:
+                continue
+    except Exception:
+        return 0.0
+
+    return min(score, 1.0)
+
+
+def _score_remote_reproducibility(resource: Dict[str, Any]) -> float:
+    """
+    Remote fallback using metadata or repo inspection.
+    """
+    url = resource.get("url", "")
+    if "huggingface.co" in url:
+        try:
+            repo_id = url.split("huggingface.co/")[-1].strip("/")
+            headers = {"Authorization": f"Bearer {HF_TOKEN}"} if HF_TOKEN else {}
+            r = requests.get(f"https://huggingface.co/api/models/{repo_id}", headers=headers, timeout=10)
+            if r.status_code == 200:
+                info = r.json()
+                # Heuristic: if model has 'training', 'datasets', or 'config' info, it’s reproducible
+                if any(k in info for k in ("training", "datasets", "config")):
+                    return 0.8
+        except Exception:
+            return 0.0
+    return 0.0
+
 
 def metric(resource: Dict[str, Any]) -> Tuple[float, int]:
     """
-    Compute a reproducibility score for a model repository.
-
-    Parameters
-    ----------
-    resource : dict
-        Metadata about the model, including:
-          - "local_dir": path to the locally cloned repository (str)
-
-    Returns
-    -------
-    (score, latency_ms)
-        score -> [0, 1]  — higher is better
-        latency_ms      — runtime in milliseconds
+    Combined reproducibility metric:
+      • Prefer local_dir analysis (for tests and cloned repos)
+      • Otherwise fall back to Hugging Face / GitHub heuristics
     """
-
-    # Start timing for latency measurement
     start = time.perf_counter()
+    local_dir = resource.get("local_dir") or resource.get("local_path")
 
-    # Get the local repo directory; may be None if cloning failed
-    local_dir = resource.get("local_dir")
-    if not local_dir or not os.path.isdir(local_dir):
-        # If repo unavailable, reproducibility cannot be evaluated
-        return 0.0, int((time.perf_counter() - start) * 1000)
+    # ✅ 1. Local analysis always takes precedence
+    if local_dir and os.path.isdir(local_dir):
+        score = _score_local_reproducibility(local_dir)
+        latency = int((time.perf_counter() - start) * 1000)
+        return round(score, 3), latency
 
-    # -----------------------------
-    #  SCORING STRATEGY (weights)
-    # -----------------------------
-    # 0.4  -> environment specification (requirements.txt, setup.py, etc.)
-    # 0.2  -> random seed or config references
-    # 0.2  -> runnable artifacts (Jupyter notebooks / examples folder)
-    # 0.2  -> README mentions reproducibility instructions
-    # Total capped at 1.0
-
-    score = 0.0
-
-    # 1️ Environment specification check
-    env_files = ["requirements.txt", "environment.yml", "setup.py", "pyproject.toml"]
-    if any(os.path.exists(os.path.join(local_dir, f)) for f in env_files):
-        score += 0.4
-
-    # 2️ Random seed / configuration keywords
-    # We look for known seed functions inside small .py or .ipynb files.
-    seed_regex = re.compile(r"(manual_seed|random\.seed|np\.random\.seed)", re.I)
-    try:
-        for root, _, files in os.walk(local_dir):
-            for fn in files:
-                if fn.endswith((".py", ".ipynb")):
-                    path = os.path.join(root, fn)
-                    # skip very large files for speed
-                    if os.path.getsize(path) > 20_000:
-                        continue
-                    text = open(path, encoding="utf-8", errors="ignore").read()
-                    if seed_regex.search(text):
-                        score += 0.2
-                        raise StopIteration  # found at least one match
-    except StopIteration:
-        pass
-    except Exception:
-        # Non-fatal: ignore read errors
-        pass
-
-    # 3️ Check for runnable artifacts
-    has_notebook = any(f.endswith(".ipynb") for f in os.listdir(local_dir))
-    has_examples_dir = os.path.isdir(os.path.join(local_dir, "examples"))
-    if has_notebook or has_examples_dir:
-        score += 0.2
-
-    # 4️ README instructions mentioning reproducibility
-    readme_text = ""
-    for name in ["README.md", "README.txt", "README.rst"]:
-        p = os.path.join(local_dir, name)
-        if os.path.isfile(p):
-            readme_text = open(p, encoding="utf-8", errors="ignore").read().lower()
-            break
-    if any(k in readme_text for k in ["reproduce", "run experiment", "train", "how to run"]):
-        score += 0.2
-
-    # Limit to 1.0 max and round nicely
-    final_score = round(min(score, 1.0), 4)
-
-    latency_ms = int((time.perf_counter() - start) * 1000)
-    return final_score, latency_ms
+    # ✅ 2. Remote fallback (only if no local_dir)
+    score = _score_remote_reproducibility(resource)
+    latency = int((time.perf_counter() - start) * 1000)
+    return round(score, 3), latency
