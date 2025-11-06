@@ -7,6 +7,9 @@ load_dotenv()
 print("[DEBUG] HF token loaded:", bool(os.getenv("HUGGINGFACE_HUB_TOKEN")))
 print("[DEBUG] GitHub token loaded:", bool(os.getenv("GITHUB_TOKEN")))
 
+# ---- Back-compat constants (imported by router or older code) ----
+NON_LATENCY = 0  # used as a default latency when a metric fails/doesn't measure time
+
 # Import your existing metrics/utilities
 from src.metrics import (
     ramp_up_time,
