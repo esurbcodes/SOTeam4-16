@@ -2,7 +2,6 @@
 import os
 import boto3
 
-# ---- Environment setup ----
 def _bucket() -> str:
     b = os.getenv("S3_BUCKET")
     if not b:
@@ -12,18 +11,17 @@ def _bucket() -> str:
 def _client():
     """
     Create an S3 client.
-    - In AWS Lambda: boto3 auto-detects AWS_REGION from the runtime.
-    - Locally: your AWS CLI config or .env provides credentials and region.
+    - In Lambda: boto3 auto-detects region from the runtime env (AWS_REGION).
+    - Locally: use AWS config or the AWS_REGION env var if present.
     """
-    return boto3.client("s3")
+    region = os.getenv("AWS_REGION")  # present in Lambda; optional locally
+    return boto3.client("s3", region_name=region) if region else boto3.client("s3")
 
-# ---- Core operations ----
 def upload_to_s3(key: str, data: bytes) -> str:
     """Upload bytes to S3 and return s3:// URI."""
     client = _client()
     bucket = _bucket()
     client.put_object(Bucket=bucket, Key=key, Body=data)
-    return f"s3://{bucket}/{key}"
     return f"s3://{bucket}/{key}"
 
 def download_from_s3(key: str) -> bytes:
@@ -33,9 +31,6 @@ def download_from_s3(key: str) -> bytes:
     obj = client.get_object(Bucket=bucket, Key=key)
     return obj["Body"].read()
 
-# ---- Aliases (for compatibility) ----
-def put_bytes(key: str, data: bytes) -> str:
-    return upload_to_s3(key, data)
-
-def get_bytes(key: str) -> bytes:
-    return download_from_s3(key)
+# Compatibility aliases
+put_bytes = upload_to_s3
+get_bytes = download_from_s3
