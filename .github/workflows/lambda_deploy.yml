@@ -3,15 +3,16 @@ name: CD - Deploy API to Lambda
 on:
   push:
     branches: [ main ]
+    paths-ignore:
+      - ".github/dependabot.yml"
   workflow_dispatch:
 
 permissions:
-  id-token: write
+  id-token: write     # required for OIDC
   contents: read
 
 jobs:
   deploy:
-    # Don't try to deploy on bot pushes (no secrets available)
     if: ${{ github.actor != 'dependabot[bot]' }}
     runs-on: ubuntu-latest
 
@@ -26,12 +27,25 @@ jobs:
 
       - name: Build Lambda zip (code + deps)
         run: |
+          set -euxo pipefail
           python -m pip install --upgrade pip
           rm -rf package app.zip
           python -m pip install -r requirements.txt -t package
+          # include your application code
           cp -R src package/src
+          # trim cache
           find package -name "__pycache__" -type d -exec rm -rf {} +
-          cd package && zip -r ../app.zip .
+          (cd package && zip -r ../app.zip .)
+
+      - name: Validate required secrets
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          LAMBDA_FUNCTION_NAME: ${{ secrets.LAMBDA_FUNCTION_NAME }}
+        run: |
+          set -e
+          [ -n "$AWS_REGION" ] || { echo "::error::Missing secret AWS_REGION"; exit 1; }
+          [ -n "$LAMBDA_FUNCTION_NAME" ] || { echo "::error::Missing secret LAMBDA_FUNCTION_NAME"; exit 1; }
+          echo "Inputs look good."
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -40,9 +54,41 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           role-session-name: github-actions-lambda-cd
 
-      - name: Update Lambda code
+      - name: Debug AWS identity & function
+        env:
+          FN: ${{ secrets.LAMBDA_FUNCTION_NAME }}
         run: |
-          aws lambda update-function-code \
-            --function-name "${{ secrets.LAMBDA_FUNCTION_NAME }}" \
-            --zip-file "fileb://app.zip" \
-            --publish
+          set -euxo pipefail
+          aws --version
+          aws sts get-caller-identity
+          echo "Function: $FN"
+          aws lambda get-function --function-name "$FN" || { echo "::error::Lambda function not found"; exit 1; }
+          ls -lh app.zip
+          unzip -l app.zip | head -n 50 || true
+
+      - name: Update Lambda code (size-aware, S3 fallback if configured)
+        env:
+          FN: ${{ secrets.LAMBDA_FUNCTION_NAME }}
+          DEPLOY_BUCKET: ${{ secrets.DEPLOY_BUCKET }}   # optional; set if zip >49MB
+        run: |
+          set -euxo pipefail
+          BYTES=$(stat -c%s app.zip)
+          if [ "$BYTES" -gt 49000000 ]; then
+            if [ -z "${DEPLOY_BUCKET:-}" ]; then
+              echo "::error::Zip > 49MB and DEPLOY_BUCKET not set."
+              exit 1
+            fi
+            echo "Zip >49MB. Uploading to s3://$DEPLOY_BUCKET/app.zip and deploying from S3..."
+            aws s3 cp app.zip "s3://$DEPLOY_BUCKET/app.zip"
+            aws lambda update-function-code \
+              --function-name "$FN" \
+              --s3-bucket "$DEPLOY_BUCKET" \
+              --s3-key "app.zip" \
+              --publish
+          else
+            echo "Zip <=49MB. Using direct upload..."
+            aws lambda update-function-code \
+              --function-name "$FN" \
+              --zip-file "fileb://app.zip" \
+              --publish
+          fi
