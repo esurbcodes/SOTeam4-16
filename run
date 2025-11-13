@@ -10,33 +10,53 @@
 Executable CLI 'run' for Phase 1.
 
 Usage:
-  ./run install        -> installs dependencies from requirements.txt
-  ./run test           -> runs test suite
-  ./run URL_FILE       -> processes newline-delimited URLs and prints NDJSON
+  ./run install       -> installs dependencies from requirements.txt
+  ./run test          -> runs test suite
+  ./run URL_FILE      -> processes newline-delimited URLs and prints NDJSON
 """
 from __future__ import annotations # Allows annotations (like return types) to be postponed and interpreted as strings
 from src.utils.logging import logger
 # ----------------------------
 # Standard library imports
 # ----------------------------
-import argparse      # for parsing command line arguments
-import importlib     # for dynamic module importing
-import json          # for encoding/decoding JSON
-import logging       # for logging info/errors
-import os            # for environment variables & file operations
-import pkgutil       # for discovering Python modules
-import subprocess    # for running external processes
-import sys           # for system-specific functions
+import argparse     # for parsing command line arguments
+import importlib    # for dynamic module importing
+import json         # for encoding/decoding JSON
+import logging      # for logging info/errors
+import os           # for environment variables & file operations
+import pkgutil      # for discovering Python modules
+import subprocess   # for running external processes
+import sys          # for system-specific functions
 import time
 import shutil
 import stat
 import io
+import threading
 from contextlib import redirect_stdout, redirect_stderr
 
 
 from concurrent.futures import ThreadPoolExecutor, as_completed  # for parallel tasks
 from pathlib import Path       # for safer path operations
 from typing import Any, Dict, List, Tuple, Callable  # type hints
+
+# ----------------------------
+# Standard library imports
+# ----------------------------
+import argparse      # for parsing command line arguments
+# ... (existing imports) ...
+import io
+from contextlib import redirect_stdout, redirect_stderr
+import tempfile, re
+import concurrent.futures # <-- Add this
+
+# ... (existing imports) ...
+from typing import Any, Dict, List, Tuple, Callable  # type hints
+
+# --- Add these new imports ---
+from huggingface_hub import snapshot_download
+from src.utils.hf_normalize import normalize_hf_id
+from urllib.parse import urlparse
+# -----------------------------
 
 os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 os.environ.setdefault("TQDM_DISABLE", "1")  # extra belt-and-suspenders
@@ -56,11 +76,95 @@ if _prev:
     parts.append(_prev)
 os.environ["PYTHONPATH"] = os.pathsep.join(parts)
 
+# --- ADD THIS LOCK ---
+_METRIC_IMPORT_LOCK = threading.Lock()
+# ---------------------
 
 def remove_readonly(func, path, excinfo):
     """Error handler for shutil.rmtree that removes read-only permissions."""
     os.chmod(path, stat.S_IWRITE)
     func(path)
+
+
+# ---------------------------------------------------------------------
+# Helper: Attach a local directory for Hugging Face models
+# ---------------------------------------------------------------------
+def _attach_local_dir_if_hf(resource: dict) -> dict:
+    """
+    If this resource is a Hugging Face model, download a temporary local
+    snapshot so file-based metrics (e.g., reproducibility, reviewedness)
+    can analyze its contents.
+    """
+    url = resource.get("url", "")
+    name = resource.get("name", "")
+
+    # Detect if this is a Hugging Face model
+    if "huggingface.co" in url or ("/" in name and not name.startswith("http")):
+        try:
+            repo_id = normalize_hf_id(name or url)
+            local_dir = tempfile.mkdtemp(prefix="hf_")
+
+            # Disable symlinks on Windows to avoid warnings
+            snapshot_download(
+                repo_id=repo_id,
+                local_dir=local_dir,
+                local_dir_use_symlinks=False,   # avoid Windows symlink warning
+                etag_timeout=15,
+
+                # ⬇️ ONLY fetch what our metrics need
+                allow_patterns=[
+                "README", "README.*", "readme*", "LICENSE*", 
+                "requirements*.txt", "environment.yml", "pyproject.toml", "setup.py",
+                "examples/**", "*.ipynb",
+                ".github/**", ".github/**/*",  # ✅ include nested files
+                "CONTRIBUTING.*", "CODEOWNERS", "model_card*.*", "config.json"
+                ],
+
+
+                # (optional) extra safety—explicitly skip huge files
+                ignore_patterns=[
+                    "*.bin", "*.safetensors", "*.onnx", "*.h5", "*.tflite", "*.pt", "*.ckpt",
+                    "pytorch_model.*", "tf_model.*", "rust_model.*", "flax_model.*", "weight*"
+                ],
+            )
+
+            resource["local_dir"] = local_dir
+        except Exception:
+            # Fail gracefully if download fails or repo not found
+            pass
+
+    return resource
+    
+def run_with_timeout(func, arg, timeout=45, label=None):
+    """Run a callable with a hard timeout."""
+    shown = label or getattr(func, "__name__", "unknown")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+        fut = ex.submit(func, arg)
+        try:
+            return fut.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            logger.warning(f" {shown} timed out after {timeout}s.")
+            return 0.0, 0
+
+def _normalize_github_repo_url(url: str) -> str | None:
+    """
+    Convert any GitHub URL (/tree/... or with fragments) to the cloneable repo root.
+    e.g. https://github.com/pytorch/fairseq/tree/master/examples/wav2vec -> https://github.com/pytorch/fairseq.git
+    Returns None if not a GitHub URL.
+    """
+    try:
+        if not url or "github.com" not in url:
+            return None
+        u = urlparse(url)
+        parts = [p for p in u.path.strip("/").split("/") if p]
+        if len(parts) >= 2:
+            owner, repo = parts[0], parts[1]
+            repo = re.sub(r"\.git$", "", repo)
+            return f"https://github.com/{owner}/{repo}.git"
+    except Exception:
+        pass
+    return None
+
 
 # ----------------------------
 # Install / Test handlers
@@ -68,7 +172,7 @@ def remove_readonly(func, path, excinfo):
 def run_subprocess(cmd: List[str]) -> int: # cmd is a variable of type: List[string], and (-> int), means return type int
     """Run a subprocess command and return exit code."""
     try:
-        result = subprocess.run(cmd, check=False) 
+        result = subprocess.run(cmd, check=False)
         return result.returncode
     except Exception as exc:  # safety net
         logger.error("Subprocess failed: %s", exc)
@@ -158,7 +262,7 @@ def handle_test() -> int:
     if importlib.util.find_spec("coverage") is not None:
         subprocess.run([sys.executable, "-m", "coverage", "erase"], text=True, capture_output=True)
         subprocess.run([sys.executable, "-m", "coverage", "run", "-m", "pytest", "-q"],
-                       text=True, capture_output=True)
+                         text=True, capture_output=True)
         rep = subprocess.run([sys.executable, "-m", "coverage", "report", "-m"],
                              text=True, capture_output=True)
         for ln in (rep.stdout or "").splitlines()[::-1]:
@@ -222,67 +326,69 @@ def load_metrics() -> Dict[str, Callable[[Dict[str, Any]], Tuple[float, int]]]:
         logger.debug("metrics package not found; proceeding with none")
         return metrics
 
-    for _, mod_name, is_pkg in pkgutil.iter_modules(package.__path__, package.__name__ + "."):
-        if is_pkg:
-            continue
-        try:
-            # silence *any* print() in module top-level during import
-            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-                module = importlib.import_module(mod_name)
-        except Exception as e:
-            logger.debug("Skipping metric %s (import failed): %s", mod_name, e)
-            continue
-        func = getattr(module, "metric", None)
-        if callable(func):
-            metrics[mod_name.split(".")[-1]] = func
+    # --- Use lock to make module import thread-safe ---
+    with _METRIC_IMPORT_LOCK:
+        for _, mod_name, is_pkg in pkgutil.iter_modules(package.__path__, package.__name__ + "."):
+            if is_pkg:
+                continue
+            try:
+                # silence *any* print() in module top-level during import
+                with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                    module = importlib.import_module(mod_name)
+            except Exception as e:
+                logger.debug("Skipping metric %s (import failed): %s", mod_name, e)
+                continue
+            func = getattr(module, "metric", None)
+            if callable(func):
+                metrics[mod_name.split(".")[-1]] = func
     return metrics
 
 
-
-
 # ----------------------------
-# Metric computation (upd version, fixed?)
+# Metric computation
 # ----------------------------
 def compute_metrics_for_model(resource: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Compute all metrics for a single model resource.
-    Ensures 'category' is always a string per spec: MODEL | DATASET | CODE.
+    Compute all metrics for a single model/resource with safe guards:
+      - Skips repo-dependent metrics if no GitHub repo is available.
+      - Applies a per-metric timeout (default 15s).
+      - Logs start/finish for each metric.
+      - Computes net_score only from numeric values.
     """
+
+    # Load all metric functions dynamically
     metrics = load_metrics()
 
-    # --- Enforce category from classify_url (never numeric) ---
-    category = classify_url(resource.get("url"))
     out: Dict[str, Any] = {
         "name": resource.get("name", "unknown"),
-        "category": category,
-        "url": resource.get("url"),
+        "category": "MODEL",
     }
 
     results: Dict[str, Tuple[float, int]] = {}
 
+    # Run each metric function safely
     for name, func in metrics.items():
-        # Skip category.py from overwriting the spec field
-        if name == "category":
-            try:
-                _, latency = func(resource)
-                out["category_latency"] = int(latency)
-            except Exception:
-                out["category_latency"] = 0
+        # Skip repo-dependent metrics if no GitHub repo was found
+        if resource.get("skip_repo_metrics") and name in {"bus_factor", "code_quality"}:
+            logger.info(f"Skipping {name} (no GitHub repo for {resource.get('name')})")
             continue
 
+        logger.info(f"→ Running metric: {name} for {resource.get('name')}")
         try:
-            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-                score, latency = func(resource)
-            score = float(max(0.0, min(1.0, float(score))))
-            latency = int(latency)
-        except Exception:
+            score, latency = run_with_timeout(func, resource, timeout=90, label=f"metric:{name}")
+            logger.info(f" Finished metric: {name} ({latency} ms)")
+            if isinstance(score, (int, float)):
+                score = float(max(0.0, min(1.0, score)))
+        except Exception as e:
+            logger.exception("Metric %s failed on %s: %s", name, resource.get("url"), e)
             score, latency = 0.0, 0
 
         results[name] = (score, latency)
 
-    # Flatten into JSON
+    # Flatten results into output dictionary
     for name, (score, latency) in results.items():
-        if name == "model_scorer":
+        if name == "size_score":
+            # Special handling: same score for multiple hardware
             out[name] = {
                 "raspberry_pi": score,
                 "jetson_nano": score,
@@ -293,142 +399,125 @@ def compute_metrics_for_model(resource: Dict[str, Any]) -> Dict[str, Any]:
             out[name] = score
         out[f"{name}_latency"] = latency
 
-    # --- Net score ---
-    if results:
-        metric_scores = [s for s, _ in results.values()]
-        net_score = sum(metric_scores) / len(metric_scores)
-    else:
-        net_score = 0.0
+    # Compute net_score = average of numeric metrics only
+    numeric_scores = []
+    net_latency = 0
+    for (score, latency) in results.values():
+        try:
+            net_latency += int(latency or 0)
+        except Exception:
+            pass
+        if isinstance(score, (int, float)) and not isinstance(score, bool):
+            numeric_scores.append(float(score))
 
-    net_latency = sum(lat for _, lat in results.values())
-
-    out["net_score"] = round(max(0.0, min(1.0, net_score)), 4)
-    out["net_score_latency"] = int(net_latency)
+    net_score = round((sum(numeric_scores) / len(numeric_scores)) if numeric_scores else 0.0, 4)
+    out["net_score"] = net_score
+    out["net_score_latency"] = net_latency
 
     return out
 
+
 # ----------------------------
-# URL File Processing (upd version, fixed?)
+# URL File Processing
 # ----------------------------
 def process_url_file(path_str: str) -> int:
-    """
-    Read URL file (code_url, dataset_url, model_url).
-    Only model URLs produce NDJSON output.
-    """
+    """Read URL file, find/clone repos, run metrics, and output NDJSON results."""
     try:
         from src.utils.repo_cloner import clone_repo_to_temp
-    except Exception:
+    except ImportError:
         clone_repo_to_temp = None
     try:
         from src.utils.github_link_finder import find_github_url_from_hf
-    except Exception:
+    except ImportError:
         find_github_url_from_hf = None
-
+        
     p = Path(path_str)
     if not p.exists():
+        logger.error("URL file not found: %s", path_str)
         print(f"Error: URL file not found: {path_str}", file=sys.stderr)
         return 1
 
-    import csv as _csv
-    resources: List[Dict[str, Any]] = []
+    urls: List[str] = [ln.strip() for ln in p.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    if not urls:
+        logger.info("URL file empty.")
+        return 0
+    
+    resources = [
+    {
+        "url": u,
+        "category": classify_url(u),
+        "name": (
+            "/".join(u.rstrip('/').split('/')[-2:])  # github: owner/repo
+            if "github.com" in u
+            else normalize_hf_id(u)                 # HF: normalize to owner/repo
+        ),
+    }
+    for u in urls
+    ]
 
-    with p.open("r", encoding="utf-8") as fh:
-        reader = _csv.reader(fh)
-        for row in reader:
-            row = [part.strip() for part in row if part and part.strip()]
-            code_url = dataset_url = model_url = None
-
-            if len(row) == 1:
-                url = row[0]
-                cat = classify_url(url)
-                if cat == "MODEL":
-                    model_url = url
-                elif cat == "DATASET":
-                    dataset_url = url
-                else:
-                    code_url = url
-            else:
-                parts = (row + ["", "", ""])[:3]
-                code_url, dataset_url, model_url = (
-                    parts[0] or None, parts[1] or None, parts[2] or None
-                )
-
-            chosen = model_url or dataset_url or code_url
-            name = None
-            if chosen:
-                if "huggingface.co" in chosen:
-                    path_parts = chosen.split("huggingface.co/")[-1].split("/")
-                    name = "/".join(path_parts[:2])  # enforce namespace/repo format
-                elif "github.com" in chosen:
-                    name = "/".join(chosen.rstrip("/").split("/")[-2:])
-                else:
-                    name = chosen.rstrip("/").split("/")[-1]
-
-
-            resources.append({
-                "code_url": code_url,
-                "dataset_url": dataset_url,
-                "model_url": model_url,
-                "category": classify_url(chosen) if chosen else "CODE",
-                "name": name or "unknown",
-                "url": chosen,
-            })
-
-    # Only process model URLs
-    models = [r for r in resources if r.get("model_url") and classify_url(r["model_url"]) == "MODEL"]
+    models = [r for r in resources if r["category"] == "MODEL"]
 
     for r in models:
-        repo_to_clone = None
-        model_url = r.get("model_url", "")
-
-        if "github.com" in model_url:
-            repo_to_clone = model_url
-        elif "huggingface.co" in model_url and find_github_url_from_hf:
+        # --- Wrap all setup I/O in silencers ---
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             try:
-                with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-                    repo_to_clone = find_github_url_from_hf(r["name"])
-            except Exception:
+                # 1. Attach a local copy of Hugging Face model files
+                #r = _attach_local_dir_if_hf(r)
+                
+                
                 repo_to_clone = None
 
-        if repo_to_clone and clone_repo_to_temp:
-            try:
-                with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-                    local_dir = clone_repo_to_temp(repo_to_clone)
-                r["local_path"] = local_dir
-                r["local_dir"] = local_dir
-            except Exception:
+                # 2. Find GitHub repo URL
+                if "github.com" in r["url"]:
+                    repo_to_clone = _normalize_github_repo_url(r["url"]) or None
+                elif "huggingface.co" in r["url"] and find_github_url_from_hf:
+                    gh = find_github_url_from_hf(r["name"])
+                    if gh:
+                        repo_to_clone = _normalize_github_repo_url(gh) or None
+                        
+                if not repo_to_clone:
+                    r["skip_repo_metrics"] = True
+                else:
+                    r["skip_repo_metrics"] = False
+
+                # 3. Clone GitHub repo
+                if repo_to_clone and clone_repo_to_temp:
+                    r["local_path"] = clone_repo_to_temp(repo_to_clone)
+                else:
+                    r["local_path"] = None
+            except Exception as e:
+                logger.debug(f"Repo setup failed for {r.get('name')}: {e}")
                 r["local_path"] = None
-                r["local_dir"] = None
-        else:
-            r["local_path"] = None
-            r["local_dir"] = None
-
-        # Compute metrics safely
-        try:
-            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-                result = compute_metrics_for_model(r)
-        except Exception:
-            result = {
-                "name": r.get("name", "unknown"),
-                "category": "MODEL",
-                "url": r.get("model_url") or r.get("url"),
-                "net_score": 0.0,
-                "net_score_latency": 0,
-            }
-
-        sys.stdout.write(json.dumps(result, ensure_ascii=False, separators=(",", ":")) + "\n")
-        sys.stdout.flush()
-
-        # cleanup cloned repo
-        local = r.get("local_path") or r.get("local_dir")
-        if local:
+                r["skip_repo_metrics"] = True
+                
+    # Run metric computation in a thread pool
+    with ThreadPoolExecutor(max_workers=min(8, os.cpu_count() or 1)) as exe:
+        futures = {exe.submit(compute_metrics_for_model, r): r for r in models}
+        for fut in as_completed(futures):
             try:
-                shutil.rmtree(local, onerror=remove_readonly)
-            except Exception:
-                pass
-
+                result = fut.result()
+                # This is the only print that should go to stdout
+                print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+                sys.stdout.flush()
+            except Exception as exc:
+                logger.exception("Failed to compute metrics: %s", exc)
+            finally:
+                resource_done = futures[fut]
+                # Silence the cleanup process
+                if resource_done.get('local_path'):
+                    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                        try:
+                            shutil.rmtree(resource_done['local_path'], onerror=remove_readonly)
+                        except Exception:
+                            pass # fail cleanup silently
+                if resource_done.get('local_dir'): # Cleanup HF dir
+                    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                        try:
+                            shutil.rmtree(resource_done['local_dir'], onerror=remove_readonly)
+                        except Exception:
+                            pass # fail cleanup silently
+            
     return 0
-
 
 # ----------------------------
 # CLI Entrypoint

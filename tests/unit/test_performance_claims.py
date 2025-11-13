@@ -1,9 +1,9 @@
 # tests/unit/test_performance_claims.py
 
 from src.metrics.performance_claims import metric
-from huggingface_hub.utils import HfHubHTTPError
+from requests import Response
 import pytest
-
+from huggingface_hub.utils import HfHubHTTPError
 
 class FakeModelInfo:
     def __init__(self, downloads):
@@ -21,8 +21,16 @@ def test_performance_claims_high_downloads(mocker):
 
 def test_performance_claims_api_error(mocker):
     """If HuggingFace API raises HfHubHTTPError, score must be 0.0."""
-    mocker.patch('src.metrics.performance_claims.model_info',
-                 side_effect=HfHubHTTPError("Not Found"))
+    from requests import Response
+
+    # Create a dummy Response object to satisfy the new constructor
+    dummy_response = Response()
+    dummy_response.status_code = 404
+
+    mocker.patch(
+        "src.metrics.performance_claims.model_info",
+        side_effect=HfHubHTTPError(message="Not Found", response=dummy_response),
+    )
     score, latency = metric({"name": "not/a-real-model"})
     assert score == 0.0
     assert latency >= 0

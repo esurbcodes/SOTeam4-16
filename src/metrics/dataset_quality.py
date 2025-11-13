@@ -1,72 +1,69 @@
-import time
-import logging
-from typing import Any, Dict, Tuple, List
+from __future__ import annotations
+import time, re, logging, os
+from typing import Any, Dict, Tuple, Set
+from urllib.parse import urlparse
+from dotenv import load_dotenv
+from huggingface_hub import HfApi, dataset_info, hf_hub_download
+from huggingface_hub.utils import RepositoryNotFoundError, HFValidationError
+from src.utils.dataset_link_finder import find_datasets_from_resource, _normalize_dataset_ref
+from src.utils.hf_normalize import normalize_hf_id
 
-from huggingface_hub import dataset_info
-from src.utils.dataset_link_finder import find_datasets_from_resource
-
+load_dotenv()
+HF_TOKEN = os.getenv("HUGGINGFACE_HUB_TOKEN")
 logger = logging.getLogger("phase1_cli")
 
 
-def _extract_dataset_id(dataset_ref: str) -> str:
-    """
-    Normalize a dataset reference (URL or owner/name) to a dataset_id
-    usable with huggingface_hub.dataset_info().
-    """
-    if dataset_ref.startswith("http"):
-        parts = dataset_ref.rstrip("/").split("/")
-        if len(parts) >= 2:
-            return "/".join(parts[-2:])  # owner/name
-    return dataset_ref  # already looks like owner/name
-
-
-def _score_dataset(dataset_id: str) -> float:
-    """
-    Calculate dataset quality score for a single dataset_id.
-    """
+def get_dataset_id_from_url(url: str) -> str | None:
     try:
-        info = dataset_info(dataset_id)
+        parts = urlparse(url).path.strip("/").split("/")
+        if len(parts) >= 2 and parts[0] == "datasets":
+            return _normalize_dataset_ref("/".join(parts[1:3]))
+    except Exception:
+        pass
+    return None
 
-        card_score = 0.5 if (info.cardData and "dataset_card" in info.cardData) else 0.0
-        downloads_score = 0.3 if info.downloads and info.downloads > 1000 else 0.0
-        likes_score = 0.2 if info.likes and info.likes > 10 else 0.0
 
-        return card_score + downloads_score + likes_score
+def score_single_dataset(ds_id: str, token: str | None) -> float:
+    try:
+        info = dataset_info(ds_id, token=token)
+        card = 0.5 if getattr(info, "cardData", None) else 0.0
+        downloads = 0.3 if getattr(info, "downloads", 0) > 1000 else 0.0
+        likes = 0.2 if getattr(info, "likes", 0) > 10 else 0.0
+        return card + downloads + likes
     except Exception as e:
-        logger.error(f"Failed to get info for dataset {dataset_id}: {e}")
+        logger.debug(f"DatasetQuality: fail for {ds_id}: {e}")
         return 0.0
 
 
-# ---------------------------------------------------------------------
-# Backward compatibility shim for old tests
-def find_dataset_url_from_hf(model_name: str) -> str | None:
-    """
-    Old compatibility function for tests.
-    Uses new find_datasets_from_resource internally.
-    Returns the first dataset URL if available, else None.
-    """
-    resource = {"name": model_name, "url": f"https://huggingface.co/{model_name}"}
-    datasets, _ = find_datasets_from_resource(resource)
-    return datasets[0] if datasets else None
-# ---------------------------------------------------------------------
-
-
 def metric(resource: Dict[str, Any]) -> Tuple[float, int]:
-    """
-    Calculates a dataset quality score by finding linked dataset(s)
-    and assessing their metadata on the Hugging Face Hub.
-    """
-    start_time = time.perf_counter()
-    score = 0.0
+    start = time.perf_counter()
+    repo_id = resource.get("name")
+    all_refs: Set[str] = set()
+    token = HF_TOKEN
+    api = HfApi(token=token)
 
-    datasets, _ = find_datasets_from_resource(resource)
+    # --- Step 1: tags from model_info ---
+    try:
+        info = api.model_info(normalize_hf_id(repo_id))
+        tags = getattr(info, "tags", [])
+        tag_refs = {t.split(":", 1)[1] for t in tags if isinstance(t, str) and t.startswith("dataset:")}
+        for ref in tag_refs:
+            if norm := _normalize_dataset_ref(ref):
+                all_refs.add(norm)
+    except Exception:
+        pass
 
-    if datasets:
-        # Score all found datasets and take the max (best-case quality)
-        dataset_ids: List[str] = [_extract_dataset_id(d) for d in datasets]
-        scores = [_score_dataset(ds_id) for ds_id in dataset_ids if ds_id]
-        if scores:
-            score = max(scores)
+    # --- Step 2: README parse ---
+    try:
+        found, _ = find_datasets_from_resource(resource)
+        all_refs.update(found or [])
+    except Exception as e:
+        logger.debug(f"DatasetQuality: README parse fail for {repo_id}: {e}")
 
-    latency_ms = int((time.perf_counter() - start_time) * 1000)
-    return score, latency_ms
+    # --- Step 3: scoring ---
+    scorable = {r for r in all_refs if "/" in r}
+    scores = [score_single_dataset(r, token) for r in scorable] if scorable else []
+    final = max(scores) if scores else (0.5 if all_refs else 0.0)
+
+    latency = int((time.perf_counter() - start) * 1000)
+    return round(min(final, 1.0), 3), latency
