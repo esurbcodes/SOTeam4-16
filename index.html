@@ -132,79 +132,89 @@
     <footer>© 2025 Team 4 • Purdue ECE/SWE 45000 • Phase 2</footer>
 
     <script>
-      async function analyzeUrl() {
-        const url = document.getElementById("urlInput").value.trim();
-        const out = document.getElementById("output");
-        if (!url) {
-          out.textContent = "Please enter a valid URL.";
-          return;
-        }
+	  const API_BASE = "https://c1r52eygxi.execute-api.us-east-2.amazonaws.com/api";
 
-        out.textContent = "Processing...";
-        try {
-          // Replace this with your deployed API endpoint
-          const api = "https://c1r52eygxi.execute-api.us-east-2.amazonaws.com/";
-          const res = await fetch(api, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ url }),
-          });
-          const data = await res.json();
-          out.textContent = JSON.stringify(data, null, 2);
-        } catch (err) {
-          out.textContent = "Error: " + err.message;
-        }
-      }
+	  async function analyzeUrl() {
+		const url = document.getElementById("urlInput").value.trim();
+		const out = document.getElementById("output");
+		if (!url) {
+		  out.textContent = "Please enter a valid URL.";
+		  return;
+		}
 
-      // api logic for search and load more
-      let cursor = null; // for pagination
-      let currentQuery = "";
+		out.textContent = "Processing...";
+		try {
+		  // POST to /api/score with the Phase 2-style payload
+		  const res = await fetch(`${API_BASE}/score`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ urls: [url] }),
+		  });
 
-      async function fetchModels(query = "", append = false) {
-        const params = new URLSearchParams({ limit: 10 });
-        if (query) params.append("q", query);
-        if (cursor) params.append("cursor", cursor);
+		  if (!res.ok) {
+			const text = await res.text();
+			out.textContent = `Error ${res.status}: ${text}`;
+			return;
+		  }
 
-        const resp = await fetch(`/models?${params.toString()}`);
-        if (!resp.ok) {
-          console.error("Failed to fetch models");
-          return;
-        }
+		  const data = await res.json();
+		  out.textContent = JSON.stringify(data, null, 2);
+		} catch (err) {
+		  out.textContent = "Error: " + err.message;
+		}
+	  }
 
-        const data = await resp.json();
-        const container = document.getElementById("models-container");
+	  // --- Registry search + pagination ---
 
-        if (!append) container.innerHTML = "";
+	  let cursor = null; // for pagination
+	  let currentQuery = "";
 
-        data.items.forEach((model) => {
-          const div = document.createElement("div");
-          div.className = "model-card";
-          div.innerHTML = `
-          <strong>${model.name}</strong><br>
-          <small>${model.card_summary || "(no summary)"}</small>
-        `;
-          container.appendChild(div);
-        });
+	  async function fetchModels(query = "", append = false) {
+		const params = new URLSearchParams({ limit: 10 });
+		if (query) params.append("q", query);
+		if (cursor) params.append("cursor", cursor);
 
-        // handle pagination
-        cursor = data.next_cursor || null;
-        document.getElementById("load-more-btn").style.display = cursor
-          ? "inline-block"
-          : "none";
-      }
+		const resp = await fetch(`${API_BASE}/models?${params.toString()}`);
+		if (!resp.ok) {
+		  console.error("Failed to fetch models", resp.status);
+		  return;
+		}
 
-      document.getElementById("search-btn").addEventListener("click", () => {
-        cursor = null;
-        currentQuery = document.getElementById("search-input").value;
-        fetchModels(currentQuery, false);
-      });
+		const data = await resp.json();
+		const container = document.getElementById("models-container");
 
-      document.getElementById("load-more-btn").addEventListener("click", () => {
-        fetchModels(currentQuery, true);
-      });
+		if (!append) container.innerHTML = "";
 
-      // initial load
-      fetchModels();
-    </script>
+		data.items.forEach((model) => {
+		  const div = document.createElement("div");
+		  div.className = "model-card";
+		  div.innerHTML = `
+			<strong>${model.name}</strong><br>
+			<small>${model.card_summary || "(no summary)"}</small>
+		  `;
+		  container.appendChild(div);
+		});
+
+		// handle pagination
+		cursor = data.next_cursor || null;
+		document.getElementById("load-more-btn").style.display = cursor
+		  ? "inline-block"
+		  : "none";
+	  }
+
+	  document.getElementById("search-btn").addEventListener("click", () => {
+		cursor = null;
+		currentQuery = document.getElementById("search-input").value;
+		fetchModels(currentQuery, false);
+	  });
+
+	  document.getElementById("load-more-btn").addEventListener("click", () => {
+		fetchModels(currentQuery, true);
+	  });
+
+	  // initial load
+	  fetchModels();
+</script>
+
   </body>
 </html>

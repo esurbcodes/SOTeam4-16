@@ -1,0 +1,35 @@
+name: CD - Deploy Frontend to S3
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy-frontend:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      # If your frontend lives in a subfolder like ./frontend,
+      # change the path in the sync command below.
+      - name: Sync static frontend to S3
+        run: |
+          aws s3 sync . s3://${{ secrets.S3_FRONTEND_BUCKET }} \
+            --exclude ".git/*" \
+            --exclude ".github/*" \
+            --exclude "tests/*" \
+            --exclude "src/*" \
+            --exclude "requirements.txt" \
+            --exclude "README.md" \
+            --delete
