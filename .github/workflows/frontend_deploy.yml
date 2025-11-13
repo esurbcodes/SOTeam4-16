@@ -33,7 +33,7 @@ jobs:
 
       - name: Sync static frontend to S3
         run: |
-          aws s3 sync . s3://${{ secrets.S3_FRONTEND_BUCKET }}/ \
+          aws s3 sync . s3://sot4-model-registry-dev/ \
             --exclude ".git/*" \
             --exclude ".github/*" \
             --exclude "src/*" \
