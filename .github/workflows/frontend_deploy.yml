@@ -1,0 +1,45 @@
+name: CD - Deploy Frontend to S3
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "index.html"
+      - "*.html"
+      - "*.js"
+      - "*.css"
+      - "assets/**"
+      - ".github/workflows/frontend_deploy.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy-frontend:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Sync static frontend to S3
+        run: |
+          aws s3 sync . s3://${{ secrets.S3_FRONTEND_BUCKET }}/ \
+            --exclude ".git/*" \
+            --exclude ".github/*" \
+            --exclude "src/*" \
+            --exclude "backend/*" \
+            --exclude "tests/*" \
+            --exclude "*.py" \
+            --exclude "requirements.txt" \
+            --exclude "README.md" \
+            --delete
