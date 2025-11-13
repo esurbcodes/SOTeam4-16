@@ -4,12 +4,30 @@ from dotenv import load_dotenv
 load_dotenv()  # load .env early
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from mangum import Mangum
 
 from src.api.routers import models as models_router
 from src.api.routes_s3 import router as s3_router  # mounts /api/s3/*
 
 app = FastAPI(title="SOTeam4P2 API")
+
+# During dev you can be permissive:
+# origins = ["*"]
+
+# Or be specific:
+origins = [
+    "http://sot4-model-registry-dev.s3-website.us-east-2.amazonaws.com",
+    "https://sot4-model-registry-dev.s3-website.us-east-2.amazonaws.com",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,      # or ["*"] while you're debugging
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Mount everything under /api
 app.include_router(models_router.router, prefix="/api")
