@@ -135,36 +135,39 @@
 <script>
   const API_BASE = "https://c1r52eygxi.execute-api.us-east-2.amazonaws.com/api";
 
-  // --- Analyze URL / Ingest & Score ---
-  async function analyzeUrl() {
-    const url = document.getElementById("urlInput").value.trim();
-    const out = document.getElementById("output");
-    if (!url) {
-      out.textContent = "Please enter a valid URL.";
+// --- Analyze URL / Ingest & Score ---
+async function analyzeUrl() {
+  const url = document.getElementById("urlInput").value.trim();
+  const out = document.getElementById("output");
+
+  if (!url) {
+    out.textContent = "Please enter a valid URL.";
+    return;
+  }
+
+  out.textContent = "Processing...";
+
+  try {
+    // Build ?model_ref=<url> query string
+    const params = new URLSearchParams({ model_ref: url });
+
+    const res = await fetch(`${API_BASE}/ingest?${params.toString()}`, {
+      method: "POST",
+      // no JSON body needed unless your backend says otherwise
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      out.textContent = `Error ${res.status}: ${text}`;
       return;
     }
 
-    out.textContent = "Processing...";
-    try {
-      const res = await fetch(`${API_BASE}/ingest`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        // keep using Phase-2 style payload
-        body: JSON.stringify({ urls: [url] }),
-      });
-
-      if (!res.ok) {
-        const text = await res.text();
-        out.textContent = `Error ${res.status}: ${text}`;
-        return;
-      }
-
-      const data = await res.json();
-      out.textContent = JSON.stringify(data, null, 2);
-    } catch (err) {
-      out.textContent = "Error: " + err.message;
-    }
+    const data = await res.json();
+    out.textContent = JSON.stringify(data, null, 2);
+  } catch (err) {
+    out.textContent = "Error: " + err.message;
   }
+}
 
   // --- Reset system state ---
   async function resetSystem() {
