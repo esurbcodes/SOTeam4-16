@@ -70,13 +70,38 @@ def rate_model(model_ref: str):
 
 
 @router.post("/ingest", response_model=ModelOut, status_code=201)
-def ingest_huggingface(model_ref: str = Query(..., description="owner/name or full HF URL")) -> ModelOut:
+def ingest_model(
+    model_ref: str = Query(..., description="Hugging Face model id or URL")
+) -> ModelOut:
+    """
+    Ingest a Hugging Face model.
+
+    - Accepts either `owner/name` or a full `https://huggingface.co/owner/name` URL.
+    - Uses IngestService + ScoringService under the hood (same logic as CLI).
+    - Enforces the ingest gate (each NON_LATENCY metric >= threshold).
+    """
+
+    # Normalize: if the user pasted a full HF URL, strip the prefix.
+    if "huggingface.co" in model_ref:
+        name = model_ref.split("huggingface.co/")[-1].strip("/")
+    else:
+        name = model_ref.strip()
+
     try:
-        return _ingest.ingest_hf(model_ref)
+        # This calls ScoringService.rate(...) and applies the ingest gate.
+        # On success, it creates and returns a ModelOut via RegistryService.
+        return _ingest.ingest_hf(name)
+
     except ValueError as e:
+        # IngestService uses ValueError to signal “gate failed”
+        # (e.g., reviewedness too low). Surface that as a 400.
         raise HTTPException(status_code=400, detail=str(e))
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ingest failed: {e}")
+        # Any other unexpected failure becomes a 500 JSON error,
+        # but still goes through FastAPI + CORSMiddleware.
+        print(f"[ERROR] ingest failed for {model_ref}: {e}")
+        raise HTTPException(status_code=500, detail="Ingest failed; see server logs.")
 
 
 # ------------------------------------------------------------------ #
