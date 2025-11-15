@@ -76,15 +76,15 @@ def rate_model(model_ref: str):
     load_dotenv()
     start = time.perf_counter()
 
-    # 1️⃣ Normalize model name and build HF URL
+    #  Normalize model name and build HF URL
     hf_id = normalize_hf_id(model_ref)
     hf_url = f"https://huggingface.co/{hf_id}"
 
-    # 2️⃣ Try to find a corresponding GitHub repo
+    #  Try to find a corresponding GitHub repo
     gh_url = find_github_url_from_hf(hf_id)
     repo_url = _normalize_github_repo_url(gh_url or hf_url)
 
-    # 3️⃣ Clone the repo (if any)
+    #  Clone the repo (if any)
     local_path = None
     if repo_url:
         try:
@@ -93,7 +93,7 @@ def rate_model(model_ref: str):
         except Exception:
             local_path = None
 
-    # 4️⃣ Build resource (same as CLI)
+    #  Build resource (same as CLI)
     resource = {
         "name": hf_id,
         "url": hf_url,
@@ -102,10 +102,10 @@ def rate_model(model_ref: str):
         "category": "MODEL",
     }
 
-    # 5️⃣ Run metric computation
+    #  Run metric computation
     result = compute_metrics_for_model(resource)
 
-    # 6️⃣ Clean up cloned repo
+    #  Clean up cloned repo
     if local_path:
         with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             shutil.rmtree(local_path, ignore_errors=True)
