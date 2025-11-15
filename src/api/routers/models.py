@@ -76,15 +76,15 @@ def rate_model(model_ref: str):
     load_dotenv()
     start = time.perf_counter()
 
-    # 1️⃣ Normalize model name and build HF URL
+    #  Normalize model name and build HF URL
     hf_id = normalize_hf_id(model_ref)
     hf_url = f"https://huggingface.co/{hf_id}"
 
-    # 2️⃣ Try to find a corresponding GitHub repo
+    #  Try to find a corresponding GitHub repo
     gh_url = find_github_url_from_hf(hf_id)
     repo_url = _normalize_github_repo_url(gh_url or hf_url)
 
-    # 3️⃣ Clone the repo (if any)
+    #  Clone the repo (if any)
     local_path = None
     if repo_url:
         try:
@@ -93,7 +93,7 @@ def rate_model(model_ref: str):
         except Exception:
             local_path = None
 
-    # 4️⃣ Build resource (same as CLI)
+    #  Build resource (same as CLI)
     resource = {
         "name": hf_id,
         "url": hf_url,
@@ -102,10 +102,10 @@ def rate_model(model_ref: str):
         "category": "MODEL",
     }
 
-    # 5️⃣ Run metric computation
+    #  Run metric computation
     result = compute_metrics_for_model(resource)
 
-    # 6️⃣ Clean up cloned repo
+    #  Clean up cloned repo
     if local_path:
         with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             shutil.rmtree(local_path, ignore_errors=True)
@@ -119,65 +119,39 @@ def rate_model(model_ref: str):
         "latency_ms": latency_ms
     }
 
-
-
-
 @router.post("/ingest", response_model=ModelOut, status_code=201)
-def ingest_huggingface(model_ref: str = Query(..., description="owner/name or full HF URL")) -> ModelOut:
+def ingest_model(
+    model_ref: str = Query(..., description="Hugging Face model id or URL")
+) -> ModelOut:
     """
-    Ingest a Hugging Face model, ensuring metrics (like reviewedness) are computed
-    with the same repo-cloning logic as /rate.
+    Ingest a Hugging Face model.
+
+    - Accepts either `owner/name` or a full `https://huggingface.co/owner/name` URL.
+    - Uses IngestService + ScoringService under the hood (same logic as CLI).
+    - Enforces the ingest gate (each NON_LATENCY metric >= threshold).
     """
-    import io, shutil
-    from contextlib import redirect_stdout, redirect_stderr
-    from src.utils.hf_normalize import normalize_hf_id
-    from src.utils.github_link_finder import find_github_url_from_hf
-    from src.utils.repo_cloner import clone_repo_to_temp
-    from run import compute_metrics_for_model, _normalize_github_repo_url
-    from ...schemas.models import ModelCreate
 
-    hf_id = normalize_hf_id(model_ref)
-    hf_url = f"https://huggingface.co/{hf_id}"
-    gh_url = find_github_url_from_hf(hf_id)
-    repo_url = _normalize_github_repo_url(gh_url or hf_url)
+    # Normalize: if the user pasted a full HF URL, strip the prefix.
+    if "huggingface.co" in model_ref:
+        name = model_ref.split("huggingface.co/")[-1].strip("/")
+    else:
+        name = model_ref.strip()
 
-    local_path = None
-    if repo_url:
-        try:
-            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-                local_path = clone_repo_to_temp(repo_url)
-        except Exception:
-            local_path = None
+    try:
+        # This calls ScoringService.rate(...) and applies the ingest gate.
+        # On success, it creates and returns a ModelOut via RegistryService.
+        return _ingest.ingest_hf(name)
 
-    resource = {
-        "name": hf_id,
-        "url": hf_url,
-        "github_url": repo_url,
-        "local_path": local_path,
-        "category": "MODEL",
-    }
+    except ValueError as e:
+        # IngestService uses ValueError to signal “gate failed”
+        # (e.g., reviewedness too low). Surface that as a 400.
+        raise HTTPException(status_code=400, detail=str(e))
 
-    result = compute_metrics_for_model(resource)
-
-    # Cleanup
-    if local_path:
-        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-            shutil.rmtree(local_path, ignore_errors=True)
-
-    reviewedness = result.get("reviewedness", 0.0)
-    if reviewedness < 0.5:
-        raise HTTPException(status_code=400, detail=f"Ingest rejected: reviewedness={reviewedness:.2f} < 0.50")
-
-    # ✅ Create proper Pydantic model for registry
-    model_create = ModelCreate(
-        name=hf_id,
-        url=hf_url,
-        version="1.0",
-        metadata=result
-    )
-
-    model_entry = _registry.create(model_create)
-    return model_entry
+    except Exception as e:
+        # Any other unexpected failure becomes a 500 JSON error,
+        # but still goes through FastAPI + CORSMiddleware.
+        print(f"[ERROR] ingest failed for {model_ref}: {e}")
+        raise HTTPException(status_code=500, detail="Ingest failed; see server logs.")
 
 
 # ------------------------------------------------------------------ #
