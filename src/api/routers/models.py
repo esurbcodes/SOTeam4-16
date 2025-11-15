@@ -119,9 +119,6 @@ def rate_model(model_ref: str):
         "latency_ms": latency_ms
     }
 
-
-
-
 @router.post("/ingest", response_model=ModelOut, status_code=201)
 def ingest_model(
     model_ref: str = Query(..., description="Hugging Face model id or URL")
