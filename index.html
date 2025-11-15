@@ -117,6 +117,7 @@
 
       <h2>Results</h2>
       <pre id="output">Awaiting input...</pre>
+	  <button id="reset-btn">Reset System</button>
 
       <input
         id="search-input"
@@ -131,89 +132,127 @@
 
     <footer>© 2025 Team 4 • Purdue ECE/SWE 45000 • Phase 2</footer>
 
-    <script>
-	  const API_BASE = "https://c1r52eygxi.execute-api.us-east-2.amazonaws.com/api";
+<script>
+  const API_BASE = "https://c1r52eygxi.execute-api.us-east-2.amazonaws.com/api";
 
-	  async function analyzeUrl() {
-		const url = document.getElementById("urlInput").value.trim();
-		const out = document.getElementById("output");
-		if (!url) {
-		  out.textContent = "Please enter a valid URL.";
-		  return;
-		}
+// --- Analyze URL / Ingest & Score ---
+async function analyzeUrl() {
+  const url = document.getElementById("urlInput").value.trim();
+  const out = document.getElementById("output");
 
-		out.textContent = "Processing...";
-		try {
-		  // POST to /api/score with the Phase 2-style payload
-		  const res = await fetch(`${API_BASE}/score`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ urls: [url] }),
-		  });
+  if (!url) {
+    out.textContent = "Please enter a valid URL.";
+    return;
+  }
 
-		  if (!res.ok) {
-			const text = await res.text();
-			out.textContent = `Error ${res.status}: ${text}`;
-			return;
-		  }
+  out.textContent = "Processing...";
 
-		  const data = await res.json();
-		  out.textContent = JSON.stringify(data, null, 2);
-		} catch (err) {
-		  out.textContent = "Error: " + err.message;
-		}
-	  }
+  try {
+    // Build ?model_ref=<url> query string
+    const params = new URLSearchParams({ model_ref: url });
 
-	  // --- Registry search + pagination ---
+    const res = await fetch(`${API_BASE}/ingest?${params.toString()}`, {
+      method: "POST",
+      // no JSON body needed unless your backend says otherwise
+    });
 
-	  let cursor = null; // for pagination
-	  let currentQuery = "";
+    if (!res.ok) {
+      const text = await res.text();
+      out.textContent = `Error ${res.status}: ${text}`;
+      return;
+    }
 
-	  async function fetchModels(query = "", append = false) {
-		const params = new URLSearchParams({ limit: 10 });
-		if (query) params.append("q", query);
-		if (cursor) params.append("cursor", cursor);
+    const data = await res.json();
+    out.textContent = JSON.stringify(data, null, 2);
+  } catch (err) {
+    out.textContent = "Error: " + err.message;
+  }
+}
 
-		const resp = await fetch(`${API_BASE}/models?${params.toString()}`);
-		if (!resp.ok) {
-		  console.error("Failed to fetch models", resp.status);
-		  return;
-		}
+  // --- Reset system state ---
+  async function resetSystem() {
+    const out = document.getElementById("output");
 
-		const data = await resp.json();
-		const container = document.getElementById("models-container");
+    try {
+      const res = await fetch(`${API_BASE}/reset`, {
+        method: "POST",
+      });
 
-		if (!append) container.innerHTML = "";
+      if (!res.ok) {
+        const text = await res.text();
+        out.textContent = `Reset failed (status ${res.status}): ${text}`;
+        return;
+      }
 
-		data.items.forEach((model) => {
-		  const div = document.createElement("div");
-		  div.className = "model-card";
-		  div.innerHTML = `
-			<strong>${model.name}</strong><br>
-			<small>${model.card_summary || "(no summary)"}</small>
-		  `;
-		  container.appendChild(div);
-		});
+      out.textContent = "System reset successfully.";
+      // refresh the model list after reset
+      cursor = null;
+      currentQuery = "";
+      fetchModels("", false);
+    } catch (err) {
+      out.textContent = "Reset error: " + err.message;
+    }
+  }
 
-		// handle pagination
-		cursor = data.next_cursor || null;
-		document.getElementById("load-more-btn").style.display = cursor
-		  ? "inline-block"
-		  : "none";
-	  }
+  // --- Registry search + pagination ---
 
-	  document.getElementById("search-btn").addEventListener("click", () => {
-		cursor = null;
-		currentQuery = document.getElementById("search-input").value;
-		fetchModels(currentQuery, false);
-	  });
+  let cursor = null; // for pagination
+  let currentQuery = "";
 
-	  document.getElementById("load-more-btn").addEventListener("click", () => {
-		fetchModels(currentQuery, true);
-	  });
+  async function fetchModels(query = "", append = false) {
+    const params = new URLSearchParams({ limit: 10 });
+    if (query) params.append("q", query);
+    if (cursor) params.append("cursor", cursor);
 
-	  // initial load
-	  fetchModels();
+    const resp = await fetch(`${API_BASE}/models?${params.toString()}`);
+    if (!resp.ok) {
+      console.error("Failed to fetch models", resp.status);
+      return;
+    }
+
+    const data = await resp.json();
+    const container = document.getElementById("models-container");
+
+    if (!append) container.innerHTML = "";
+
+    (data.items || []).forEach((model) => {
+      const div = document.createElement("div");
+      div.className = "model-card";
+      div.innerHTML = `
+        <strong>${model.name}</strong><br>
+        <small>${model.card_summary || "(no summary)"}</small>
+      `;
+      container.appendChild(div);
+    });
+
+    // handle pagination
+    cursor = data.next_cursor || null;
+    const loadMoreBtn = document.getElementById("load-more-btn");
+    if (loadMoreBtn) {
+      loadMoreBtn.style.display = cursor ? "inline-block" : "none";
+    }
+  }
+
+  // hook up search button
+  document.getElementById("search-btn").addEventListener("click", () => {
+    cursor = null;
+    currentQuery = document.getElementById("search-input").value;
+    fetchModels(currentQuery, false);
+  });
+
+  // hook up load more button
+  document.getElementById("load-more-btn").addEventListener("click", () => {
+    fetchModels(currentQuery, true);
+  });
+
+  // hook up reset button
+  const resetBtn = document.getElementById("reset-btn");
+  if (resetBtn) {
+    resetBtn.addEventListener("click", resetSystem);
+  }
+
+  // initial load
+  fetchModels();
 </script>
 
   </body>
