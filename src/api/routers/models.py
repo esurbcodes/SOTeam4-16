@@ -71,7 +71,6 @@ def rate_model(model_ref: str):
 
 @router.post("/ingest", response_model=ModelOut, status_code=201)
 def ingest_huggingface(model_ref: str = Query(..., description="owner/name or full HF URL")) -> ModelOut:
-<<<<<<< HEAD
     """
     Ingest a Hugging Face model, ensuring metrics (like reviewedness) are computed
     with the same repo-cloning logic as /rate.
@@ -126,14 +125,6 @@ def ingest_huggingface(model_ref: str = Query(..., description="owner/name or fu
 
     model_entry = _registry.create(model_create)
     return model_entry
-=======
-    try:
-        return _ingest.ingest_hf(model_ref)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ingest failed: {e}")
->>>>>>> parent of b53a24b (Refactor /ingest endpoint to use IngestService + ScoringService (fix 500 errors and CORS passthrough))
 
 
 # ------------------------------------------------------------------ #
@@ -148,10 +139,6 @@ def reset_system():
 def health():
     return {
         "status": "ok",
-        "uptime_s": int(time.time() - _START_TIME),
-        "models": _registry.count_models(),
-    }
-
         "uptime_s": int(time.time() - _START_TIME),
         "models": _registry.count_models(),
     }
