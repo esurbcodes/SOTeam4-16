@@ -169,3 +169,7 @@ def health():
         "uptime_s": int(time.time() - _START_TIME),
         "models": _registry.count_models(),
     }
+
+        "uptime_s": int(time.time() - _START_TIME),
+        "models": _registry.count_models(),
+    }
