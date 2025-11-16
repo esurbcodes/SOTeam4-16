@@ -17,16 +17,15 @@ jobs:
   deploy-frontend:
     runs-on: ubuntu-latest
 
-    # Needed for OIDC → AWS role assumption
     permissions:
       contents: read
       id-token: write
 
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
+      - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
@@ -34,12 +33,11 @@ jobs:
 
       - name: Sync static frontend to S3
         run: |
-          echo "Deploying to bucket: sot4-model-registry-dev"
           aws s3 sync . s3://sot4-model-registry-dev/ \
             --exclude ".git/*" \
             --exclude ".github/*" \
-            --exclude "backend/*" \
             --exclude "src/*" \
+            --exclude "backend/*" \
             --exclude "tests/*" \
             --exclude "*.py" \
             --exclude "requirements.txt" \
