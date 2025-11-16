@@ -14,13 +14,13 @@ app = FastAPI(title="SOTeam4P2 API")
 <<<<<<< HEAD
 =======
 # During dev you can be permissive:
-origins = ["*"]
+# origins = ["*"]
 
 # Or be specific:
-# origins = [
-#     "http://sot4-model-registry-dev.s3-website.us-east-2.amazonaws.com",
-#     "https://sot4-model-registry-dev.s3-website.us-east-2.amazonaws.com",
-# ]
+origins = [
+    "http://sot4-model-registry-dev.s3-website.us-east-2.amazonaws.com",
+    "https://sot4-model-registry-dev.s3-website.us-east-2.amazonaws.com",
+]
 
 app.add_middleware(
     CORSMiddleware,
