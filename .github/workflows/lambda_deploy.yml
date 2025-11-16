@@ -3,17 +3,17 @@ name: CD - Deploy API to Lambda
 on:
   push:
     branches: [ main ]
-    paths-ignore:
-      - ".github/dependabot.yml"
   workflow_dispatch:
 
 permissions:
-  id-token: write     # required for OIDC
+  id-token: write
   contents: read
+
+env:
+  PYTHON_VERSION: "3.12"
 
 jobs:
   deploy:
-    if: ${{ github.actor != 'dependabot[bot]' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -23,72 +23,47 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Build Lambda zip (code + deps)
         run: |
-          set -euxo pipefail
           python -m pip install --upgrade pip
           rm -rf package app.zip
           python -m pip install -r requirements.txt -t package
-          # include your application code
           cp -R src package/src
-          # trim cache
+          # Remove pyc/__pycache__ to keep size small
           find package -name "__pycache__" -type d -exec rm -rf {} +
-          (cd package && zip -r ../app.zip .)
+          cd package && zip -r ../app.zip .
 
-      - name: Validate required secrets
-        env:
-          AWS_REGION: ${{ secrets.AWS_REGION }}
-          LAMBDA_FUNCTION_NAME: ${{ secrets.LAMBDA_FUNCTION_NAME }}
-        run: |
-          set -e
-          [ -n "$AWS_REGION" ] || { echo "::error::Missing secret AWS_REGION"; exit 1; }
-          [ -n "$LAMBDA_FUNCTION_NAME" ] || { echo "::error::Missing secret LAMBDA_FUNCTION_NAME"; exit 1; }
-          echo "Inputs look good."
-
+      # Prefer OIDC
       - name: Configure AWS credentials (OIDC)
+        if: ${{ secrets.AWS_ROLE_ARN != '' }}
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: ${{ secrets.AWS_REGION }}
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           role-session-name: github-actions-lambda-cd
 
-      - name: Debug AWS identity & function
-        env:
-          FN: ${{ secrets.LAMBDA_FUNCTION_NAME }}
-        run: |
-          set -euxo pipefail
-          aws --version
-          aws sts get-caller-identity
-          echo "Function: $FN"
-          aws lambda get-function --function-name "$FN" || { echo "::error::Lambda function not found"; exit 1; }
-          ls -lh app.zip
-          unzip -l app.zip | head -n 50 || true
+      # Fallback to static keys (optional)
+      - name: Configure AWS credentials (static keys)
+        if: ${{ secrets.AWS_ROLE_ARN == '' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
 
-      - name: Update Lambda code (size-aware, S3 fallback if configured)
-        env:
-          FN: ${{ secrets.LAMBDA_FUNCTION_NAME }}
-          DEPLOY_BUCKET: ${{ secrets.DEPLOY_BUCKET }}   # optional; set if zip >49MB
+      - name: Update Lambda code
         run: |
-          set -euxo pipefail
-          BYTES=$(stat -c%s app.zip)
-          if [ "$BYTES" -gt 49000000 ]; then
-            if [ -z "${DEPLOY_BUCKET:-}" ]; then
-              echo "::error::Zip > 49MB and DEPLOY_BUCKET not set."
-              exit 1
-            fi
-            echo "Zip >49MB. Uploading to s3://$DEPLOY_BUCKET/app.zip and deploying from S3..."
-            aws s3 cp app.zip "s3://$DEPLOY_BUCKET/app.zip"
-            aws lambda update-function-code \
-              --function-name "$FN" \
-              --s3-bucket "$DEPLOY_BUCKET" \
-              --s3-key "app.zip" \
-              --publish
-          else
-            echo "Zip <=49MB. Using direct upload..."
-            aws lambda update-function-code \
-              --function-name "$FN" \
-              --zip-file "fileb://app.zip" \
-              --publish
-          fi
+          aws lambda update-function-code \
+            --function-name "${{ secrets.LAMBDA_FUNCTION_NAME }}" \
+            --zip-file "fileb://app.zip" \
+            --publish
+
+      # (Optional) enforce runtime/handler if you want to pin them each deploy
+      # - name: Ensure runtime/handler
+      #   run: |
+      #     aws lambda update-function-configuration \
+      #       --function-name "${{ secrets.LAMBDA_FUNCTION_NAME }}" \
+      #       --runtime python3.12 \
+      #       --handler src.main.handler
