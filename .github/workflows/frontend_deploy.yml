@@ -1,45 +1,69 @@
-name: CD - Deploy Frontend to S3
+name: CD - Deploy API to Lambda
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
   workflow_dispatch:
 
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.12"
+
 jobs:
-  deploy-frontend:
+  deploy:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Build Lambda zip (code + deps)
+        run: |
+          python -m pip install --upgrade pip
+          rm -rf package app.zip
+          python -m pip install -r requirements.txt -t package
+          cp -R src package/src
+          # Remove pyc/__pycache__ to keep size small
+          find package -name "__pycache__" -type d -exec rm -rf {} +
+          cd package && zip -r ../app.zip .
+
+      # Prefer OIDC
+      - name: Configure AWS credentials (OIDC)
+        if: ${{ secrets.AWS_ROLE_ARN != '' }}
         uses: aws-actions/configure-aws-credentials@v4
         with:
-<<<<<<< HEAD
+          aws-region: ${{ secrets.AWS_REGION }}
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: us-east-2  # or ${{ secrets.AWS_REGION }} if you prefer
-=======
+          role-session-name: github-actions-lambda-cd
+
+      # Fallback to static keys (optional)
+      - name: Configure AWS credentials (static keys)
+        if: ${{ secrets.AWS_ROLE_ARN == '' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
->>>>>>> parent of d2c4b7c (Merge branch 'main' into dev_sam)
 
-      # If your frontend lives in a subfolder like ./frontend,
-      # change the path in the sync command below.
-      - name: Sync static frontend to S3
+      - name: Update Lambda code
         run: |
-          aws s3 sync . s3://${{ secrets.S3_FRONTEND_BUCKET }} \
-            --exclude ".git/*" \
-            --exclude ".github/*" \
-<<<<<<< HEAD
-            --exclude "src/*" \
-            --exclude "backend/*" \
-=======
->>>>>>> parent of d2c4b7c (Merge branch 'main' into dev_sam)
-            --exclude "tests/*" \
-            --exclude "src/*" \
-            --exclude "requirements.txt" \
-            --exclude "README.md" \
-            --delete
+          aws lambda update-function-code \
+            --function-name "${{ secrets.LAMBDA_FUNCTION_NAME }}" \
+            --zip-file "fileb://app.zip" \
+            --publish
+
+      # (Optional) enforce runtime/handler if you want to pin them each deploy
+      # - name: Ensure runtime/handler
+      #   run: |
+      #     aws lambda update-function-configuration \
+      #       --function-name "${{ secrets.LAMBDA_FUNCTION_NAME }}" \
+      #       --runtime python3.12 \
+      #       --handler src.main.handler
