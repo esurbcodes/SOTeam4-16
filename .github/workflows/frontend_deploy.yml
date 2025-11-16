@@ -29,7 +29,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: us-east-2
+          aws-region: us-east-2  # or ${{ secrets.AWS_REGION }} if you prefer
 
       - name: Sync static frontend to S3
         run: |
@@ -37,8 +37,8 @@ jobs:
           aws s3 sync . s3://sot4-model-registry-dev/ \
             --exclude ".git/*" \
             --exclude ".github/*" \
-            --exclude "backend/*" \
             --exclude "src/*" \
+            --exclude "backend/*" \
             --exclude "tests/*" \
             --exclude "*.py" \
             --exclude "requirements.txt" \
