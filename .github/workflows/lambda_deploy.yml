@@ -7,7 +7,6 @@ on:
     paths:
       - "src/**"
       - "run"
-      - "main.py"
       - "requirements.txt"
       - ".github/workflows/lambda_deploy.yml"
   workflow_dispatch:
@@ -16,7 +15,6 @@ jobs:
   deploy-lambda:
     runs-on: ubuntu-latest
 
-    # Needed for GitHub → AWS OIDC
     permissions:
       contents: read
       id-token: write
@@ -30,7 +28,6 @@ jobs:
         with:
           python-version: "3.11"
 
-      # Optional: if you need dependencies vendored into the zip
       - name: Install dependencies into package/
         run: |
           python -m pip install --upgrade pip
@@ -42,7 +39,6 @@ jobs:
           # Add your source files into the package dir
           cp -r src package/src
           cp run package/run
-          cp main.py package/main.py
 
           cd package
           zip -r ../app.zip .
