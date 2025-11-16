@@ -22,16 +22,25 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: us-east-2
+          python-version: "3.12"
 
-      - name: Build Lambda deployment package
+      - name: Install dependencies into build directory
         run: |
-          # Create a clean zip containing your FastAPI app and dependencies spec
-          zip -r app.zip src requirements.txt
+          mkdir -p build
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -t build
+
+      - name: Copy application code into build directory
+        run: |
+          cp -r src build/
+
+      - name: Create Lambda deployment package
+        run: |
+          cd build
+          zip -r ../app.zip .
 
       - name: Update Lambda function code
         run: |
