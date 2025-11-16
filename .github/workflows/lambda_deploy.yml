@@ -2,68 +2,59 @@ name: CD - Deploy API to Lambda
 
 on:
   push:
-    branches: [ main ]
+    branches:
+      - main
+    paths:
+      - "src/**"
+      - "run"
+      - "main.py"
+      - "requirements.txt"
+      - ".github/workflows/lambda_deploy.yml"
   workflow_dispatch:
 
-permissions:
-  id-token: write
-  contents: read
-
-env:
-  PYTHON_VERSION: "3.12"
-
 jobs:
-  deploy:
+  deploy-lambda:
     runs-on: ubuntu-latest
 
+    # Needed for GitHub → AWS OIDC
+    permissions:
+      contents: read
+      id-token: write
+
     steps:
-      - name: Checkout
+      - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: "3.11"
 
-      - name: Build Lambda zip (code + deps)
+      # Optional: if you need dependencies vendored into the zip
+      - name: Install dependencies into package/
         run: |
           python -m pip install --upgrade pip
-          rm -rf package app.zip
-          python -m pip install -r requirements.txt -t package
-          cp -R src package/src
-          # Remove pyc/__pycache__ to keep size small
-          find package -name "__pycache__" -type d -exec rm -rf {} +
-          cd package && zip -r ../app.zip .
+          mkdir -p package
+          pip install -r requirements.txt -t package
 
-      # Prefer OIDC
+      - name: Build Lambda deployment zip
+        run: |
+          # Add your source files into the package dir
+          cp -r src package/src
+          cp run package/run
+          cp main.py package/main.py
+
+          cd package
+          zip -r ../app.zip .
+
       - name: Configure AWS credentials (OIDC)
-        if: ${{ secrets.AWS_ROLE_ARN != '' }}
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-region: ${{ secrets.AWS_REGION }}
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          role-session-name: github-actions-lambda-cd
+          aws-region: us-east-2
 
-      # Fallback to static keys (optional)
-      - name: Configure AWS credentials (static keys)
-        if: ${{ secrets.AWS_ROLE_ARN == '' }}
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
-
-      - name: Update Lambda code
+      - name: Deploy zip to Lambda
         run: |
           aws lambda update-function-code \
-            --function-name "${{ secrets.LAMBDA_FUNCTION_NAME }}" \
-            --zip-file "fileb://app.zip" \
-            --publish
-
-      # (Optional) enforce runtime/handler if you want to pin them each deploy
-      # - name: Ensure runtime/handler
-      #   run: |
-      #     aws lambda update-function-configuration \
-      #       --function-name "${{ secrets.LAMBDA_FUNCTION_NAME }}" \
-      #       --runtime python3.12 \
-      #       --handler src.main.handler
+            --function-name SOTeam4P2-Backend \
+            --zip-file fileb://app.zip
