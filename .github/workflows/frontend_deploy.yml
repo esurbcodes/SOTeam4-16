@@ -1,17 +1,20 @@
-name: CD - Deploy API to Lambda
+name: CD - Deploy Frontend to S3
 
 on:
   push:
     branches:
       - main
     paths:
-      - "src/**"
-      - "requirements.txt"
-      - ".github/workflows/lambda_deploy.yml"
+      - "index.html"
+      - "*.html"
+      - "*.js"
+      - "*.css"
+      - "assets/**"
+      - ".github/workflows/frontend_deploy.yml"
   workflow_dispatch:
 
 jobs:
-  deploy-api:
+  deploy-frontend:
     runs-on: ubuntu-latest
 
     permissions:
@@ -28,13 +31,15 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: us-east-2
 
-      - name: Build Lambda deployment package
+      - name: Sync static frontend to S3
         run: |
-          # Create a clean zip containing your FastAPI app and dependencies spec
-          zip -r app.zip src requirements.txt
-
-      - name: Update Lambda function code
-        run: |
-          aws lambda update-function-code \
-            --function-name ${{ secrets.LAMBDA_FUNCTION_NAME }} \
-            --zip-file fileb://app.zip
+          aws s3 sync . s3://sot4-model-registry-dev/ \
+            --exclude ".git/*" \
+            --exclude ".github/*" \
+            --exclude "src/*" \
+            --exclude "backend/*" \
+            --exclude "tests/*" \
+            --exclude "*.py" \
+            --exclude "requirements.txt" \
+            --exclude "README.md" \
+            --delete
