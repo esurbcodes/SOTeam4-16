@@ -36,10 +36,16 @@ jobs:
 
       - name: Build Lambda deployment zip
         run: |
-          # Add your source files into the package dir
+          # Include source code layout expected by FastAPI/Mangum
           cp -r src package/src
+
+          # Lambda handler expects main.py at root (main.handler)
+          cp src/main.py package/main.py
+
+          # Include run file if used by your app
           cp run package/run
 
+          # Zip everything
           cd package
           zip -r ../app.zip .
 
