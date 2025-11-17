@@ -384,8 +384,7 @@ def process_url_file(path_str: str) -> int:
         for fut in as_completed(futures):
             try:
                 result = fut.result()
-                print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
-                sys.stdout.flush()
+                sys.stdout.write(json.dumps(result, ensure_ascii=False, separators=(",", ":")) + "\n")
             except Exception as exc:
                 logger.exception("Failed to compute metrics: %s", exc)
 
