@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 
-# SWE 45000, PIN FALL 2025
-# TEAM 4 — PHASE 1 / PHASE 2 SHARED LOGIC
-#
-# This version has been corrected to run INSIDE src/ for AWS Lambda.
-# The original root-level CLI file remains unchanged.
+# SWE 45000 – Fall 2025
+# TEAM 4 — Phase 1 / Phase 2 shared logic
+# This file lives in /src so AWS Lambda can import it.
+# The original root-level `run` CLI remains unchanged.
 
 from __future__ import annotations
 from src.utils.logging import logger
@@ -35,14 +34,12 @@ from huggingface_hub import snapshot_download
 from src.utils.hf_normalize import normalize_hf_id
 
 
-# ================================================================
-# CORRECTED ROOT PATHS FOR BEING INSIDE src/
-# ================================================================
-# /src/run.py → __file__.parent = /src → parents[1] = project root
+# ============================================================================
+# FIX ROOT PATHS FOR BEING INSIDE src/
+# ============================================================================
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = REPO_ROOT / "src"
 
-# Ensure imports behave exactly like the original top-level CLI.
 for p in (str(REPO_ROOT), str(SRC_DIR)):
     if p not in sys.path:
         sys.path.insert(0, p)
@@ -59,9 +56,9 @@ os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 os.environ.setdefault("TQDM_DISABLE", "1")
 
 
-# ================================================================
-# UTILITIES
-# ================================================================
+# ============================================================================
+# UTILS
+# ============================================================================
 def remove_readonly(func, path, excinfo):
     os.chmod(path, stat.S_IWRITE)
     func(path)
@@ -93,9 +90,9 @@ def _normalize_github_repo_url(url: str) -> str | None:
     return None
 
 
-# ================================================================
-# INSTALL / TEST HANDLERS (still needed for CLI compatibility)
-# ================================================================
+# ============================================================================
+# INSTALL / TEST SUPPORT (needed to satisfy Phase-1 tests)
+# ============================================================================
 def run_subprocess(cmd: List[str]) -> int:
     try:
         result = subprocess.run(cmd, check=False)
@@ -128,27 +125,24 @@ def ensure_test_deps() -> None:
 
 def handle_install() -> int:
     rc = 0
-    req = Path("requirements.txt")
-    if req.exists():
-        rc = run_subprocess([sys.executable, "-m", "pip", "install", "-r", str(req)])
+    if Path("requirements.txt").exists():
+        rc = run_subprocess([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"])
         if rc != 0:
-            logger.error("Dependency installation failed (exit %d)", rc)
             return rc
-
-    dev = Path("requirements-dev.txt")
-    if dev.exists():
-        run_subprocess([sys.executable, "-m", "pip", "install", "-r", str(dev)])
-
+    if Path("requirements-dev.txt").exists():
+        run_subprocess([sys.executable, "-m", "pip", "install", "-r", "requirements-dev.txt"])
     return rc
 
 
 def handle_test() -> int:
     import tempfile, xml.etree.ElementTree as ET, importlib.util, subprocess, sys, os
 
-    os.environ.setdefault("PYTHONPATH", os.pathsep.join([os.getcwd(), str(Path.cwd() / "src")]))
+    os.environ.setdefault("PYTHONPATH",
+        os.pathsep.join([os.getcwd(), str(Path.cwd() / "src")]))
 
     with tempfile.NamedTemporaryFile(delete=False, suffix=".xml") as tf:
         junit_path = tf.name
+
     p = subprocess.run(
         [sys.executable, "-m", "pytest", "-q", f"--junitxml={junit_path}"],
         text=True, capture_output=True
@@ -172,9 +166,10 @@ def handle_test() -> int:
 
     cov_pct = "0"
     if importlib.util.find_spec("coverage") is not None:
-        subprocess.run([sys.executable, "-m", "coverage", "erase"], text=True, capture_output=True)
+        subprocess.run([sys.executable, "-m", "coverage", "erase"],
+                       text=True, capture_output=True)
         subprocess.run([sys.executable, "-m", "coverage", "run", "-m", "pytest", "-q"],
-                         text=True, capture_output=True)
+                       text=True, capture_output=True)
         rep = subprocess.run([sys.executable, "-m", "coverage", "report", "-m"],
                              text=True, capture_output=True)
         for ln in (rep.stdout or "").splitlines()[::-1]:
@@ -187,13 +182,12 @@ def handle_test() -> int:
     return 0
 
 
-# ================================================================
-# URL classification
-# ================================================================
+# ============================================================================
+# URL Classification
+# ============================================================================
 def classify_url(url: str) -> str:
     if not isinstance(url, str):
         return "CODE"
-
     u = url.strip()
     if not u:
         return "CODE"
@@ -213,27 +207,26 @@ def classify_url(url: str) -> str:
     return "CODE"
 
 
-# ================================================================
-# Dynamic Metric Loader
-# ================================================================
+# ============================================================================
+# Metric Loader
+# ============================================================================
 def load_metrics() -> Dict[str, Callable[[Dict[str, Any]], Tuple[float, int]]]:
     metrics: Dict[str, Callable] = {}
     metrics_pkg = "src.metrics"
     try:
         package = importlib.import_module(metrics_pkg)
     except ModuleNotFoundError:
-        logger.debug("metrics package not found; proceeding with none")
         return metrics
 
     with _METRIC_IMPORT_LOCK:
-        for _, mod_name, is_pkg in pkgutil.iter_modules(package.__path__, package.__name__ + "."):
+        for _, mod_name, is_pkg in pkgutil.iter_modules(package.__path__,
+                package.__name__ + "."):
             if is_pkg:
                 continue
             try:
                 with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
                     module = importlib.import_module(mod_name)
-            except Exception as e:
-                logger.debug("Skipping metric %s (import failed): %s", mod_name, e)
+            except Exception:
                 continue
             func = getattr(module, "metric", None)
             if callable(func):
@@ -241,13 +234,13 @@ def load_metrics() -> Dict[str, Callable[[Dict[str, Any]], Tuple[float, int]]]:
     return metrics
 
 
-# ================================================================
-# Compute Metrics (used by AWS API)
-# ================================================================
+# ============================================================================
+# Compute Metrics
+# ============================================================================
 def compute_metrics_for_model(resource: Dict[str, Any]) -> Dict[str, Any]:
     metrics = load_metrics()
 
-    out: Dict[str, Any] = {
+    out = {
         "name": resource.get("name", "unknown"),
         "category": "MODEL",
     }
@@ -256,22 +249,18 @@ def compute_metrics_for_model(resource: Dict[str, Any]) -> Dict[str, Any]:
 
     for name, func in metrics.items():
         if resource.get("skip_repo_metrics") and name in {"bus_factor", "code_quality"}:
-            logger.info(f"Skipping {name} (no GitHub repo for {resource.get('name')})")
             continue
 
-        logger.info(f"→ Running metric: {name} for {resource.get('name')}")
         try:
-            score, latency = run_with_timeout(func, resource, timeout=90, label=f"metric:{name}")
-            logger.info(f"Finished metric: {name} ({latency} ms)")
+            score, latency = run_with_timeout(func, resource, timeout=90,
+                                              label=f"metric:{name}")
             if isinstance(score, (int, float)):
                 score = float(max(0.0, min(1.0, score)))
-        except Exception as e:
-            logger.exception("Metric %s failed on %s: %s", name, resource.get("url"), e)
+        except Exception:
             score, latency = 0.0, 0
 
         results[name] = (score, latency)
 
-    # Build results exactly like Phase 1
     for name, (score, latency) in results.items():
         if name == "size_score":
             out[name] = {
@@ -284,41 +273,26 @@ def compute_metrics_for_model(resource: Dict[str, Any]) -> Dict[str, Any]:
             out[name] = score
         out[f"{name}_latency"] = latency
 
-    # Aggregate net score
-    numeric_scores = []
-    net_latency = 0
-    for (score, latency) in results.values():
-        try:
-            net_latency += int(latency or 0)
-        except Exception:
-            pass
-        if isinstance(score, (int, float)):
-            numeric_scores.append(float(score))
-
-    net_score = round((sum(numeric_scores) / len(numeric_scores)) if numeric_scores else 0.0, 4)
-    out["net_score"] = net_score
+    numeric = [s for (s, _) in results.values() if isinstance(s, (int, float))]
+    net_latency = sum(lat for (_, lat) in results.values())
+    out["net_score"] = round(sum(numeric) / len(numeric), 4) if numeric else 0.0
     out["net_score_latency"] = net_latency
 
     return out
 
 
-# ================================================================
-# SAFE (NO-REPO) SETUP — used by CLI only
-# ================================================================
+# ============================================================================
+# SAFE REPO SETUP (Phase 2 → NO real cloning)
+# ============================================================================
 def _safe_repo_setup(r, find_github_url_from_hf, clone_repo_to_temp):
-    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-        try:
-            r["skip_repo_metrics"] = False
-            r["local_path"] = None
-        except Exception:
-            r["local_path"] = None
-            r["skip_repo_metrics"] = False
+    r["skip_repo_metrics"] = False
+    r["local_path"] = None
     return r
 
 
-# ================================================================
+# ============================================================================
 # URL File Processing (CLI)
-# ================================================================
+# ============================================================================
 def process_url_file(path_str: str) -> int:
     try:
         from src.utils.repo_cloner import clone_repo_to_temp
@@ -331,17 +305,23 @@ def process_url_file(path_str: str) -> int:
 
     p = Path(path_str)
     if not p.exists():
-        logger.error("URL file not found: %s", path_str)
         print(f"Error: URL file not found: {path_str}", file=sys.stderr)
         return 1
 
-    urls: List[str] = [ln.strip() for ln in p.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    # --- FIX #1: Match Phase-1 behavior – split by commas & newlines ---
+    raw = p.read_text(encoding="utf-8")
+    urls = [t.strip()
+            for line in raw.splitlines()
+            for t in line.split(",")
+            if t.strip()]
+
     if not urls:
-        logger.info("URL file empty.")
         return 0
 
-    resources = [
-        {
+    # Build resource dicts
+    resources = []
+    for u in urls:
+        resources.append({
             "url": u,
             "category": classify_url(u),
             "name": (
@@ -349,13 +329,11 @@ def process_url_file(path_str: str) -> int:
                 if "github.com" in u
                 else normalize_hf_id(u)
             ),
-        }
-        for u in urls
-    ]
+        })
 
     models = [r for r in resources if r["category"] == "MODEL"]
 
-    # Attach HF metadata
+    # HF metadata
     from huggingface_hub import HfApi
     api = HfApi()
 
@@ -374,28 +352,29 @@ def process_url_file(path_str: str) -> int:
             "downloads": getattr(info, "downloads", 0),
         }
 
-    # Safe repo setup
     for r in models:
         _safe_repo_setup(r, find_github_url_from_hf, clone_repo_to_temp)
 
-    # Run metrics
+    # Metric execution
     with ThreadPoolExecutor(max_workers=min(8, os.cpu_count() or 1)) as exe:
         futures = {exe.submit(compute_metrics_for_model, r): r for r in models}
         for fut in as_completed(futures):
             try:
                 result = fut.result()
-                sys.stdout.write(json.dumps(result, ensure_ascii=False, separators=(",", ":")) + "\n")
-            except Exception as exc:
-                logger.exception("Failed to compute metrics: %s", exc)
+                sys.stdout.write(json.dumps(result, ensure_ascii=False,
+                                            separators=(",", ":")) + "\n")
+            except Exception:
+                continue
 
     return 0
 
 
-# ================================================================
-# CLI ENTRYPOINT (kept so API reuse doesn’t break CLI)
-# ================================================================
+# ============================================================================
+# CLI ENTRYPOINT
+# ============================================================================
 def main(argv: List[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="run", description="Phase 1 CLI for trustworthy model reuse")
+    parser = argparse.ArgumentParser(prog="run",
+        description="Phase 1/2 unified CLI")
     parser.add_argument("arg", nargs="?", help="install | test | URL_FILE")
     args = parser.parse_args(argv)
 
