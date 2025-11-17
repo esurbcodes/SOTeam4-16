@@ -216,7 +216,7 @@ def classify_url(url: str) -> str:
 # ================================================================
 # Dynamic Metric Loader
 # ================================================================
-def load_metrics() -> Dict[str, Callable[[Dict[str, Any)], Tuple[float, int]]]:
+def load_metrics() -> Dict[str, Callable[[Dict[str, Any]], Tuple[float, int]]]:
     metrics: Dict[str, Callable] = {}
     metrics_pkg = "src.metrics"
     try:
